@@ -1,7 +1,7 @@
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
-
+import sklearn.neighbors as skn
 
 class GSPGraph(nx.Graph):
     """
@@ -16,58 +16,37 @@ class GSPGraph(nx.Graph):
             self.add_edges_from(graph.edges(data=True))
 
         # compute Laplacian and its eigendecomposition
-        L = nx.laplacian_matrix(self).toarray()
-        self.eigenvalues, self.eigenvectors = np.linalg.eigh(L)
+        self.L = nx.laplacian_matrix(self).toarray()
+        self.eigenvalues, self.eigenvectors = np.linalg.eigh(self.L)
 
+def generate_nn_graph(N=500, k=40):
 
-def generate_graph(nodes, edges, gen_function=nx.barabasi_albert_graph, draw=True):
-    """
-    Generate a graph and convert it to GSPGraph.
-    """
+    coords = np.random.rand(N, 2)
+    A = skn.kneighbors_graph(coords, k, mode='connectivity', include_self=False)
+    G = nx.from_scipy_sparse_array(A)
 
-    G = gen_function(n=nodes, m=edges)
-    G = GSPGraph(G)
+    return GSPGraph(G)
 
-    if draw:
-        nx.draw(G, with_labels=True)
-
-    return G
-
-
-def generate_signal(graph, psd=lambda x: np.cos(x), n_samples=1, p=1.0):
-    """
-    Generate graph signals with a given Power Spectral Density.
-
-    Signal model:
-        x = U sqrt(gamma) z
-
-    where
-        U     - eigenvectors of Laplacian
-        gamma - PSD evaluated on eigenvalues
-        z     - Gaussian random coefficients
-    """
-
+def generate_signals(graph, M, p, psd_fun):
     eigvals = graph.eigenvalues
-    eigvecs = graph.eigenvectors
+    U = graph.eigenvectors
 
-    # Evaluate PSD on graph frequencies
-    gamma = psd(eigvals)
-    gamma = np.maximum(gamma, 0)
+    lmax = eigvals.max()
+    gamma = psd_fun(eigvals, lmax)
 
-    # Random spectral coefficients
-    z = np.random.randn(len(eigvals), n_samples)
+    # normalization (paper strategy)
+    gamma = gamma / (np.max(gamma) + 1e-8)
+
+    z = np.random.randn(len(eigvals), M)
     coeffs = np.sqrt(gamma)[:, None] * z
 
-    # Transform to vertex domain
-    signals = eigvecs @ coeffs
+    X = U @ coeffs
 
-    # Bernoulli sampling mask
-    mask = np.random.binomial(1, p, size=signals.shape)
+    # sampling
+    Mmask = np.random.binomial(1, p, size=X.shape)
+    Y = X * Mmask
 
-    if n_samples == 1:
-        return signals[:, 0], mask[:, 0]
-
-    return signals, mask
+    return X, Y, gamma
 
 
 def draw_psd(psd, graph=None, l_max=20):
