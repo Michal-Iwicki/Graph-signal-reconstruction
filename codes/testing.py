@@ -220,12 +220,6 @@ def run_mixed_psd_estimation_exp(N=500, M=1200, p=0.7, psd_funcs=None, probs=Non
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
-import numpy as np
-import networkx as nx
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
-
 def run_mixed_comparison_experiment(
     N=500, 
     k=30, 

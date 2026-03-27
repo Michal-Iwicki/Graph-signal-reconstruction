@@ -9,12 +9,11 @@ class GSPGraph(nx.Graph):
     Used for spectral filtering and GSP operations.
     """
 
-    def __init__(self, graph=None):
+    def __init__(self, graph: nx.Graph):
         super().__init__()
 
-        if graph is not None:
-            self.add_nodes_from(graph.nodes(data=True))
-            self.add_edges_from(graph.edges(data=True))
+        self.add_nodes_from(graph.nodes(data=True))
+        self.add_edges_from(graph.edges(data=True))
 
         # Compute the combinatorial Laplacian matrix
         self.L = nx.laplacian_matrix(self).toarray()
@@ -31,7 +30,7 @@ def generate_nn_graph(N=500, k=40):
 
     return GSPGraph(G)
 
-def generate_signals(graph, M, p, psd_fun):
+def generate_signals(graph: GSPGraph, M: int, p: float, psd_fun):
     """
     Generates M graph signals filtered by a specific PSD function.
     
@@ -61,7 +60,7 @@ def generate_signals(graph, M, p, psd_fun):
 
     return X, Y
 
-def generate_mixed_signals(graph, M: int, p: float, psd_s: list, probs: list):
+def generate_mixed_signals(graph: GSPGraph, M: int, p: float, psd_s: list, probs: list):
     """
     Generates signals from a mixture of different PSD functions.
     
@@ -95,7 +94,7 @@ def generate_mixed_signals(graph, M: int, p: float, psd_s: list, probs: list):
     
     return X, Y, labels
 
-def draw_psd(psd, graph=None, l_max=20):
+def draw_psd(psd, graph: GSPGraph, l_max: float = 20):
     """
     Plots the continuous PSD function and optionally the discrete graph frequencies.
     """
@@ -105,11 +104,9 @@ def draw_psd(psd, graph=None, l_max=20):
 
     plt.figure()
     plt.plot(x, y, label="Continuous PSD")
-
-    if graph is not None:
-        eigvals = graph.eigenvalues
-        y_points = psd(eigvals)
-        plt.scatter(eigvals, y_points, color="red", s=10, label="Graph Eigenvalues")
+    eigvals = graph.eigenvalues
+    y_points = psd(eigvals)
+    plt.scatter(eigvals, y_points, color="red", s=10, label="Graph Eigenvalues")
 
     plt.xlabel("Graph Frequency (λ)")
     plt.ylabel("Power Density")
@@ -118,7 +115,7 @@ def draw_psd(psd, graph=None, l_max=20):
     plt.legend()
     plt.show()
 
-def draw_signal(graph, signal):
+def draw_signal(graph: GSPGraph, signal: list):
     """
     Visualizes a single graph signal on the node layout.
     """
