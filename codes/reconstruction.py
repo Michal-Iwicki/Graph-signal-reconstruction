@@ -50,12 +50,12 @@ def reconstruct_smooth(graph: GSPGraph, y, beta=1.0):
     Assumes the signal is low-frequency (smooth) on the graph.
     """
     L = graph.L
+
     mask = ~np.isnan(y)
     y0 = np.nan_to_num(y, nan=0.0)
 
-    # Solve (I_mask + beta * L)x = y_obs
-    A = beta * L.copy()
-    A[mask, mask] += 1
+    # diag(mask) jako wektor
+    A = beta * L + np.diag(mask.astype(float))
 
     return np.linalg.solve(A, y0)
 
