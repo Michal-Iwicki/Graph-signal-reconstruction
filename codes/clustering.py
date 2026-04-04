@@ -11,11 +11,12 @@ from sklearn.cluster import KMeans
 # GMM DIAGONAL EM
 # =========================================
 class GMM_Diag:
-    def __init__(self, K, max_iter=100, tol=1e-4, reg=1e-6):
+    def __init__(self, K, max_iter=100, tol=1e-4, reg=1e-6, min_cluster_frac=0.05):
         self.K = K
         self.max_iter = max_iter
         self.tol = tol
         self.reg = reg
+        self.min_cluster_frac = min_cluster_frac
 
     def _log_gaussian(self, X, mu, var):
         return -0.5 * (

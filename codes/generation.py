@@ -92,6 +92,12 @@ def generate_mixed_signals(graph: GSPGraph, M: int, p: float, psd_s: list, probs
     Y = np.hstack(all_Y)
     labels = np.array(labels)
     
+    perm = np.random.permutation(X.shape[1])
+
+    X = X[:, perm]
+    Y = Y[:, perm]
+    labels = labels[perm]
+
     return X, Y, labels
 
 def draw_psd(psd, graph: GSPGraph, l_max: float = 20):
