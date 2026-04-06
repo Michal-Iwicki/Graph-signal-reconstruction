@@ -323,3 +323,60 @@ def run_mixed_comparison_experiment(
     print(df_results.groupby('Type')[['Informed MAE', 'Global MAE']].mean())
 
     return df_results
+
+
+def gmm_mixed_signal_experiment(
+    graph,
+    psd_s,
+    probs,
+    M=500,
+    p=1.0,
+    n_runs=10,
+    seed=42
+):
+    np.random.seed(seed)
+    accs = []
+    K = len(psd_s)
+    
+    # 1. Inicjalizacja narzędzi z nowego API obiektowego
+    generator = SignalGenerator(graph)
+    reconstructor = SignalReconstructor(graph)
+    
+    for _ in range(n_runs):
+
+        # ===== GENERACJA =====
+        # Użycie obiektu SignalGenerator
+        X, Y, labels = generator.generate_mixed_signals(M, p, psd_s, probs)
+        
+        # ===== REKONSTRUKCJA =====
+        if p < 1.0:
+            # Zamiana zer (maski) na NaN, zgodnie z wymaganiami reconstruct_smooth
+            Y_nan = Y.copy()
+            Y_nan[Y_nan == 0] = np.nan
+            
+            # Użycie obiektu SignalReconstructor
+            # UWAGA: Upewnij się, że zaimplementowałeś tutaj zwektoryzowaną 
+            # wersję reconstruct_smooth z naszych poprzednich ustaleń!
+            Y_recon = reconstructor.reconstruct_smooth(Y_nan, beta=0.0001)
+        else:
+            Y_recon = Y
+
+        # ===== GFT (Ekstrakcja cech) =====
+        # Użycie metody statycznej z ClusteringEvaluator
+        X_feat = ClusteringEvaluator.graph_fourier_features(graph, Y_recon)
+
+        # ===== GMM =====         # Inicjalizacja i trening GMM bez zmian (klasa GMM_Diag)
+        gmm = GMM_Diag(K)
+        gmm.fit(X_feat)
+        pred = gmm.predict(X_feat)
+        
+        # ===== EVAL =====
+        # Użycie metody statycznej do ewaluacji dokładności z uwzględnieniem algorytmu Węgierskiego
+        acc = ClusteringEvaluator.evaluate_accuracy(labels, pred, K)
+        accs.append(acc)
+
+    return {
+        "mean_acc": np.mean(accs),
+        "std_acc": np.std(accs),
+        "all_accs": accs
+    }
