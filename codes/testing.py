@@ -332,6 +332,7 @@ def gmm_mixed_signal_experiment(
     M=500,
     p=1.0,
     n_runs=10,
+    psd_rec= False,
     seed=42
 ):
     np.random.seed(seed)
@@ -354,9 +355,6 @@ def gmm_mixed_signal_experiment(
             Y_nan = Y.copy()
             Y_nan[Y_nan == 0] = np.nan
             
-            # Użycie obiektu SignalReconstructor
-            # UWAGA: Upewnij się, że zaimplementowałeś tutaj zwektoryzowaną 
-            # wersję reconstruct_smooth z naszych poprzednich ustaleń!
             Y_recon = reconstructor.reconstruct_smooth(Y_nan, beta=0.0001)
         else:
             Y_recon = Y
@@ -369,10 +367,17 @@ def gmm_mixed_signal_experiment(
         gmm = GMM_Diag(K)
         gmm.fit(X_feat)
         pred = gmm.predict(X_feat)
-        
-        # ===== EVAL =====
-        # Użycie metody statycznej do ewaluacji dokładności z uwzględnieniem algorytmu Węgierskiego
+        if psd_rec:
+            for i in range(10):
+                Y_recon = reconstructor.reconstruct_mixed(Y_nan, pred)
+                X_feat = ClusteringEvaluator.graph_fourier_features(graph, Y_recon)
+                gmm.fit(X_feat)
+                new_pred = gmm.predict(X_feat)
+                print(ClusteringEvaluator.evaluate_accuracy(new_pred, pred, K))
+                pred = new_pred
+
         acc = ClusteringEvaluator.evaluate_accuracy(labels, pred, K)
+
         accs.append(acc)
 
     return {

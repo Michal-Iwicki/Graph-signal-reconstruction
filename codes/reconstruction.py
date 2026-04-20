@@ -65,3 +65,26 @@ class SignalReconstructor:
         for m in range(Y.shape[1]):
             X_hat[:, m] = self.reconstruct_psd_single(Y[:, m], gamma, alpha, beta)
         return X_hat
+    
+    def reconstruct_mixed(self, Y, labels, alpha=10, beta=1.0):
+        labels = np.asarray(labels)
+
+        X_hat = np.zeros_like(Y)
+
+        for k in range(np.max(labels) + 1):  # bo labels ∈ {0,...,K-1}
+            idx = (labels == k)
+
+            if not np.any(idx):
+                continue  # pusty klaster – pomijamy
+
+            Yk = Y[:, idx]
+
+            # estymacja PSD dla klastra
+            gamma_k = self.estimate_gamma(Yk)
+
+            # rekonstrukcja dla tego klastra
+            X_hat[:, idx] = self.reconstruct_psd(
+                Yk, gamma=gamma_k, alpha=alpha, beta=beta
+            )
+
+        return X_hat

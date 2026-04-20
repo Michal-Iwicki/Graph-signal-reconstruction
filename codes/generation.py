@@ -3,6 +3,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sklearn.neighbors as skn
 
+class PSD_fun:
+    """
+    Special object that contains shape of the function scaled to [0,1] interval.
+    Later will be scalled to proper max eigenvalue of graph.
+    To be incorporated for mixed variant
+    """
+    def __init__(self, psd_functions):
+        self.fun = psd_functions
+
 class GSPGraph(nx.Graph):
     """
     A NetworkX Graph extension with cached Laplacian eigendecomposition.
