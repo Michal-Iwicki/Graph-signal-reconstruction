@@ -1,41 +1,21 @@
 import numpy as np
-import networkx as nx
 import matplotlib.pyplot as plt
+import networkx as nx
 import pandas as pd
 import seaborn as sns
-from sklearn.neighbors import kneighbors_graph
-from codes.generation import (
-    generate_nn_graph, 
-    generate_signals, 
-    generate_mixed_signals,
-    GSPGraph
-    )
-from codes.reconstruction import (
-    estimate_gamma,
-    reconstruct_psd_single,
-    reconstruct_smooth,
-    normalize_gamma
-)
-def run_psd_experiment(
-    N=500,
-    k=40,
-    M=1000,
-    p_values=(1.0, 0.5, 0.05),
-    psd_fn=None
-):
-    """
-    Evaluates the accuracy of PSD estimation across different sampling densities (p).
-    """
-    # 1. Graph Generation
-    coords = np.random.rand(N, 2)
-    A = kneighbors_graph(coords, k, mode='connectivity', include_self=False)
-    G = nx.from_scipy_sparse_array(A)
-    graph = GSPGraph(G)
 
+from codes.generation import GraphFactory, SignalGenerator, GSPVisualizer
+from codes.reconstruction import SignalReconstructor
+from codes.clustering import GMM_Diag, ClusteringEvaluator
+
+def run_psd_experiment(N=500, k=40, M=1000, p_values=(1.0, 0.5, 0.05), psd_fn=None):
+    graph = GraphFactory.generate_nn_graph(N, k)
+    generator = SignalGenerator(graph)
+    reconstructor = SignalReconstructor(graph)
+    
     eigvals = graph.eigenvalues
     lmax = eigvals.max()
 
-    # 2. Define Ground Truth PSD
     if psd_fn is None:
         def psd_fn(x, lmax):
             out = np.zeros_like(x)
@@ -47,70 +27,59 @@ def run_psd_experiment(
     gamma_true = np.maximum(gamma_true, 0)
     gamma_true /= (np.max(gamma_true) + 1e-8)
 
-    # 3. Experiment Loop for different p values
     plt.figure(figsize=(5 * len(p_values), 4))
 
     for i, p in enumerate(p_values):
-        # Generate signals and apply mask
-        X, Y = generate_signals(graph, M, p, psd_fn)
-
-        Y = Y.copy()
+        X, Y = generator.generate_signals(M, p, psd_fn)
         Y[Y == 0] = np.nan
 
-        # Estimate PSD from sampled data
-        gamma_est = estimate_gamma(graph, Y)
+        gamma_est = reconstructor.estimate_gamma(Y)
         gamma_est /= (np.max(gamma_est) + 1e-8)
 
-        # Plotting Results
         plt.subplot(1, len(p_values), i + 1)
         plt.plot(eigvals, gamma_true, label="True PSD")
         plt.plot(eigvals, gamma_est, "--", label="Estimated PSD")
-
-        plt.title(f"Sampling Density p = {p}")
+        plt.title(f"Sampling p = {p}")
         plt.xlabel("Eigenvalue (λ)")
         plt.ylabel("Normalized PSD")
         plt.legend()
 
     plt.tight_layout()
     plt.show()
-    
+
 def reconstruction_experiment(N=500, k=40, M_train=500, p=0.5, alpha=10, beta=1.0, gm_beta=0.1, head=None, seed=42):
-    """
-    Full experiment comparing PSD-informed reconstruction vs. standard Laplacian smoothing (GM).
-    Observed nodes are highlighted in both the line plot and the graph heatmaps.
-    """
     np.random.seed(seed)
+    
+    graph = GraphFactory.generate_nn_graph(N, k)
+    generator = SignalGenerator(graph)
+    reconstructor = SignalReconstructor(graph)
+    
+    lmax = graph.eigenvalues.max()
 
-    # 1. Initialize Graph
-    graph = generate_nn_graph(N, k)
-    eigvals = graph.eigenvalues
-    lmax = eigvals.max()
-
-    # 2. Define Ground Truth PSD
     def psd_fn(x, lmax):
         out = np.zeros_like(x)
         mask = x < lmax / 4
         out[mask] = np.sin(4 * np.pi * x[mask] / lmax)
         return np.maximum(out, 0)
 
-    # 3. Train: Estimate PSD from training samples
-    X_train, Y_train = generate_signals(graph, M_train, p=p, psd_fun=psd_fn)
+    # Train
+    _, Y_train = generator.generate_signals(M_train, p, psd_fn)
     Y_train[Y_train == 0] = np.nan
-    gamma_est = estimate_gamma(graph, Y_train)
+    gamma_est = reconstructor.estimate_gamma(Y_train)
 
-    # 4. Test: Generate a hidden signal for testing
-    X_test, Y_test = generate_signals(graph, 1, p=p, psd_fun=psd_fn)
+    # Test
+    X_test, Y_test = generator.generate_signals(1, p, psd_fn)
     x_true = X_test[:, 0]
     y_obs = Y_test[:, 0].copy()
     y_obs[y_obs == 0] = np.nan
 
-    # 5. Perform Reconstruction
-    x_psd = reconstruct_psd_single(graph, y_obs, gamma_est, alpha=alpha, beta=beta)
-    x_smooth = reconstruct_smooth(graph, y_obs, beta=gm_beta)
+    # Reconstruct
+    x_psd = reconstructor.reconstruct_psd_single(y_obs, gamma_est, alpha=alpha, beta=beta)
+    x_smooth = reconstructor.reconstruct_smooth(y_obs, beta=gm_beta)
 
-    # 6. Metrics
+    # Metrics
     mask_obs = ~np.isnan(y_obs)
-    obs_idx = np.where(mask_obs)[0] # Indices of observed nodes
+    obs_idx = np.where(mask_obs)[0]
     mask_missing = ~mask_obs
     mae_psd = np.mean(np.abs(x_psd[mask_missing] - x_true[mask_missing]))
     mae_smooth = np.mean(np.abs(x_smooth[mask_missing] - x_true[mask_missing]))
@@ -119,75 +88,55 @@ def reconstruction_experiment(N=500, k=40, M_train=500, p=0.5, alpha=10, beta=1.
     print(f"MAE PSD: {mae_psd:.4f}")
     print(f"MAE GM : {mae_smooth:.4f}")
 
-    # 7. Visualization
+    # Visualization
     pos = nx.spring_layout(graph, seed=seed)
     order = np.argsort(x_true)
     fig = plt.figure(figsize=(14, 8))
 
-    # --- Plot 1: Sorted Signal Values ---
     ax1 = plt.subplot(2, 2, 1)
-    ax1.plot(x_true[order], label="True Signal", linewidth=2, color='C0')
-    ax1.plot(x_psd[order], "--", label="PSD Reconstruction", color='C1')
+    ax1.plot(x_true[order], label="True Signal", color='C0')
+    ax1.plot(x_psd[order], "--", label="PSD Recon", color='C1')
     ax1.plot(x_smooth[order], ":", label="Smooth (GM)", color='C2')
-    # Markers for known values
-    # ax1.scatter(range(N), y_obs[order], color="black", marker='x', s=15, label="Observed", zorder=5)
     ax1.set_title("Signal (sorted by true intensity)")
     ax1.legend()
 
-    # --- Plots 2, 3, 4: Graph Heatmaps ---
     vmin, vmax = np.min(x_true), np.max(x_true)
-    
-    titles = ["True Signal", f"PSD Reconstruction (MAE={mae_psd:.3f})", f"GM Reconstruction (MAE={mae_smooth:.3f})"]
+    titles = ["True Signal", f"PSD Recon (MAE={mae_psd:.3f})", f"GM Recon (MAE={mae_smooth:.3f})"]
     data_to_plot = [x_true, x_psd, x_smooth]
 
     for i in range(3):
         ax = plt.subplot(2, 2, i+2)
-        # Draw all nodes with signal values
-        nodes = nx.draw_networkx_nodes(
-            graph, pos, node_color=data_to_plot[i], 
-            cmap="viridis", node_size=50, ax=ax, vmin=vmin, vmax=vmax
-        )
-        # Draw edges with high transparency
+        nodes = nx.draw_networkx_nodes(graph, pos, node_color=data_to_plot[i], cmap="viridis", node_size=50, ax=ax, vmin=vmin, vmax=vmax)
         nx.draw_networkx_edges(graph, pos, alpha=0.05, ax=ax)
-        
-        # --- FIX: Mark observed nodes on the graph layout ---
-        nx.draw_networkx_nodes(
-            graph, pos, nodelist=obs_idx,
-            node_color="black", node_size=25, ax=ax, label="Observed"
-        )
-        
+        nx.draw_networkx_nodes(graph, pos, nodelist=obs_idx, node_color="black", node_size=25, ax=ax, label="Observed")
         ax.set_title(titles[i])
         plt.colorbar(nodes, ax=ax)
         ax.axis("off")
 
     plt.tight_layout()
     plt.show()
-
     return mae_psd, mae_smooth
 
 def run_mixed_psd_estimation_exp(N=500, M=1200, p=0.7, psd_funcs=None, probs=None, psd_names=None):
-    """
-    Analyzes PSD estimation accuracy when multiple signal types are mixed.
-    """
     if psd_funcs is None:
         psd_funcs = [
-            lambda x, lm: np.exp(-3.0 * (x / lm)),         # Low-pass
-            lambda x, lm: np.exp(-20.0 * (x / lm - 0.4)**2), # Band-pass
-            lambda x, lm: np.exp(-3.0 * (1.0 - x / lm))    # High-pass
+            lambda x, lm: np.exp(-3.0 * (x / lm)),
+            lambda x, lm: np.exp(-20.0 * (x / lm - 0.4)**2),
+            lambda x, lm: np.exp(-3.0 * (1.0 - x / lm))
         ]
-    
     probs = probs or [0.4, 0.3, 0.3]
-    psd_names = psd_names or ["Low-pass (Heat)", "Band-pass", "High-pass"]
+    psd_names = psd_names or ["Low-pass", "Band-pass", "High-pass"]
 
-    graph = generate_nn_graph(N, k=25)
+    graph = GraphFactory.generate_nn_graph(N, 25)
+    generator = SignalGenerator(graph)
+    reconstructor = SignalReconstructor(graph)
+    
     eigvals, lmax = graph.eigenvalues, graph.eigenvalues.max()
-
-    X, Y, labels = generate_mixed_signals(graph, M, p, psd_funcs, probs)
+    _, Y, labels = generator.generate_mixed_signals(M, p, psd_funcs, probs)
     Y_nan = Y.copy()
     Y_nan[Y_nan == 0] = np.nan
 
-    # Global estimation (averaging across all classes)
-    gamma_global = normalize_gamma(estimate_gamma(graph, Y_nan))
+    gamma_global = reconstructor.normalize_gamma(reconstructor.estimate_gamma(Y_nan))
 
     fig, axes = plt.subplots(1, len(psd_funcs), figsize=(18, 5), sharey=True)
     if len(psd_funcs) == 1: axes = [axes]
@@ -196,15 +145,14 @@ def run_mixed_psd_estimation_exp(N=500, M=1200, p=0.7, psd_funcs=None, probs=Non
         ax = axes[i]
         mask = (labels == i)
         
-        # Local estimation (ground truth within the class)
         if np.any(mask):
-            gamma_local = normalize_gamma(estimate_gamma(graph, Y_nan[:, mask]))
+            gamma_local = reconstructor.normalize_gamma(reconstructor.estimate_gamma(Y_nan[:, mask]))
             count = np.sum(mask)
         else:
             gamma_local = np.zeros_like(eigvals)
             count = 0
 
-        gamma_true = normalize_gamma(psd_funcs[i](eigvals, lmax))
+        gamma_true = reconstructor.normalize_gamma(psd_funcs[i](eigvals, lmax))
 
         ax.plot(eigvals, gamma_true, 'g-', lw=3, label="True PSD", alpha=0.7)
         ax.plot(eigvals, gamma_local, 'b--', lw=2, label=f"Estimated (n={count})")
@@ -237,40 +185,42 @@ def run_mixed_comparison_experiment(
     """
     np.random.seed(seed)
 
-    # 1. Initialize Graph
-    graph = generate_nn_graph(N, k)
+    # 1. Initialize Graph and OOP Helpers
+    graph = GraphFactory.generate_nn_graph(N, k)
+    generator = SignalGenerator(graph)
+    reconstructor = SignalReconstructor(graph)
+    
     eigvals = graph.eigenvalues
     lmax = eigvals.max()
 
     # 2. Define two different Mid-Band-pass PSD functions
-    # Process A: Centered at 0.25 of the spectrum, narrower
     psd_a_fn = lambda x, lm: np.exp(-100.0 * (x / lm - 0.25)**2)
-    # Process B: Centered at 0.60 of the spectrum, wider
     psd_b_fn = lambda x, lm: np.exp(-40.0 * (x / lm - 0.6)**2)
     
     psd_funcs = [psd_a_fn, psd_b_fn]
     psd_names = ["Mid-Band A (Low-Shift)", "Mid-Band B (High-Shift)"]
 
     # 3. Train: Estimate PSDs from mixed training data
-    X_tr, Y_tr, labels_tr = generate_mixed_signals(graph, M_train, p, psd_funcs, [0.5, 0.5])
+    X_tr, Y_tr, labels_tr = generator.generate_mixed_signals(M_train, p, psd_funcs, [0.5, 0.5])
     Y_tr_nan = Y_tr.copy()
     Y_tr_nan[Y_tr_nan == 0] = np.nan
 
     # Estimate Global (Mixed) PSD - Blind to labels
-    gamma_global = normalize_gamma(estimate_gamma(graph, Y_tr_nan))
+    gamma_global = reconstructor.normalize_gamma(reconstructor.estimate_gamma(Y_tr_nan))
     
     # Estimate Informed PSDs - Specific to each class
     gamma_informed = []
     for i in range(len(psd_funcs)):
         mask = (labels_tr == i)
-        gamma_inf = normalize_gamma(estimate_gamma(graph, Y_tr_nan[:, mask]))
+        gamma_inf = reconstructor.normalize_gamma(reconstructor.estimate_gamma(Y_tr_nan[:, mask]))
         gamma_informed.append(gamma_inf)
 
-    # 4. NEW: PSD Shape Comparison (Spectral Analysis)
+    # 4. PSD Shape Comparison (Spectral Analysis)
     plt.figure(figsize=(12, 5))
+    
     # True theoretical shapes
-    plt.plot(eigvals, normalize_gamma(psd_a_fn(eigvals, lmax)), 'k-', alpha=0.15, label="True PSD A")
-    plt.plot(eigvals, normalize_gamma(psd_b_fn(eigvals, lmax)), 'k--', alpha=0.15, label="True PSD B")
+    plt.plot(eigvals, reconstructor.normalize_gamma(psd_a_fn(eigvals, lmax)), 'k-', alpha=0.15, label="True PSD A")
+    plt.plot(eigvals, reconstructor.normalize_gamma(psd_b_fn(eigvals, lmax)), 'k--', alpha=0.15, label="True PSD B")
     
     # Estimated shapes
     plt.plot(eigvals, gamma_informed[0], color='C2', lw=2, label="Informed PSD A (Estimated)")
@@ -285,11 +235,14 @@ def run_mixed_comparison_experiment(
     plt.show()
 
     # 5. Test & Aggregate: Evaluate on M_test signals
-    X_te, Y_te, labels_te = generate_mixed_signals(graph, M_test, p, psd_funcs, [0.5, 0.5])
+    X_te, Y_te, labels_te = generator.generate_mixed_signals(M_test, p, psd_funcs, [0.5, 0.5])
     
     results_list = []
-    # Store data for the example plot (first signal)
-    example_idx = 0
+    
+    # Wybieramy losowy indeks dla sygnału typu "Mid-Band A" (label == 0)
+    indices_A = np.where(labels_te == 0)[0]
+    # Upewniamy się, że wylosowano przynajmniej jeden taki sygnał
+    example_idx = np.random.choice(indices_A) if len(indices_A) > 0 else 0
     
     for i in range(M_test):
         x_true = X_te[:, i]
@@ -298,9 +251,9 @@ def run_mixed_comparison_experiment(
         label = labels_te[i]
         mask_missing = np.isnan(y_obs)
 
-        # Reconstructions
-        x_inf = reconstruct_psd_single(graph, y_obs, gamma_informed[label], alpha=alpha, beta=beta)
-        x_glo = reconstruct_psd_single(graph, y_obs, gamma_global, alpha=alpha, beta=beta)
+        # Reconstructions using the OOP reconstructor
+        x_inf = reconstructor.reconstruct_psd_single(y_obs, gamma_informed[label], alpha=alpha, beta=beta)
+        x_glo = reconstructor.reconstruct_psd_single(y_obs, gamma_global, alpha=alpha, beta=beta)
 
         # Metrics
         mae_inf = np.mean(np.abs(x_true[mask_missing] - x_inf[mask_missing]))
@@ -351,11 +304,16 @@ def run_mixed_comparison_experiment(
     plt.tight_layout()
     plt.show()
 
-    # 7. Visualization: 100 Aggregated Values (Boxplot)
+    # 7. Visualization: Aggregated Values (Boxplot)
     plt.figure(figsize=(10, 6))
     df_melt = df_results.melt(id_vars=['Type'], value_vars=['Informed MAE', 'Global MAE'], 
                               var_name='Method', value_name='MAE')
-    sns.boxplot(data=df_melt, x='Type', y='MAE', hue='Method', palette=["#2ecc71", "#e74c3c"])
+    
+    # Wymuszamy kolejność Mid-Band A przed Mid-Band B
+    sns.boxplot(data=df_melt, x='Type', y='MAE', hue='Method', 
+                palette=["#2ecc71", "#e74c3c"],
+                order=["Mid-Band A (Low-Shift)", "Mid-Band B (High-Shift)"])
+    
     plt.title(f"MAE Aggregation across {M_test} mixed signals")
     plt.grid(axis='y', alpha=0.3)
     plt.show()
@@ -365,3 +323,65 @@ def run_mixed_comparison_experiment(
     print(df_results.groupby('Type')[['Informed MAE', 'Global MAE']].mean())
 
     return df_results
+
+
+def gmm_mixed_signal_experiment(
+    graph,
+    psd_s,
+    probs,
+    M=500,
+    p=1.0,
+    n_runs=10,
+    psd_rec= False,
+    seed=42
+):
+    np.random.seed(seed)
+    accs = []
+    K = len(psd_s)
+    
+    # 1. Inicjalizacja narzędzi z nowego API obiektowego
+    generator = SignalGenerator(graph)
+    reconstructor = SignalReconstructor(graph)
+    
+    for _ in range(n_runs):
+
+        # ===== GENERACJA =====
+        # Użycie obiektu SignalGenerator
+        X, Y, labels = generator.generate_mixed_signals(M, p, psd_s, probs)
+        
+        # ===== REKONSTRUKCJA =====
+        if p < 1.0:
+            # Zamiana zer (maski) na NaN, zgodnie z wymaganiami reconstruct_smooth
+            Y_nan = Y.copy()
+            Y_nan[Y_nan == 0] = np.nan
+            
+            Y_recon = reconstructor.reconstruct_smooth(Y_nan, beta=0.0001)
+        else:
+            Y_recon = Y
+
+        # ===== GFT (Ekstrakcja cech) =====
+        # Użycie metody statycznej z ClusteringEvaluator
+        X_feat = ClusteringEvaluator.graph_fourier_features(graph, Y_recon)
+
+        # ===== GMM =====         # Inicjalizacja i trening GMM bez zmian (klasa GMM_Diag)
+        gmm = GMM_Diag(K)
+        gmm.fit(X_feat)
+        pred = gmm.predict(X_feat)
+        if psd_rec:
+            for i in range(10):
+                Y_recon = reconstructor.reconstruct_mixed(Y_nan, pred)
+                X_feat = ClusteringEvaluator.graph_fourier_features(graph, Y_recon)
+                gmm.fit(X_feat)
+                new_pred = gmm.predict(X_feat)
+                print(ClusteringEvaluator.evaluate_accuracy(new_pred, pred, K))
+                pred = new_pred
+
+        acc = ClusteringEvaluator.evaluate_accuracy(labels, pred, K)
+
+        accs.append(acc)
+
+    return {
+        "mean_acc": np.mean(accs),
+        "std_acc": np.std(accs),
+        "all_accs": accs
+    }
