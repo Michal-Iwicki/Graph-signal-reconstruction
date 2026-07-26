@@ -391,11 +391,7 @@ def _add_reconstruction_results(
 def run_single_source_experiment(
     config: SyntheticExperimentConfig | None = None,
 ) -> pd.DataFrame:
-    """Evaluate PSD estimation and reconstruction for one stationary source.
-
-    The PSD estimator is evaluated with MAE and RMSE. Smoothness and single-PSD
-    reconstruction are evaluated with the thesis-wide MAE and missing-only MAE.
-    """
+    """Evaluate PSD estimation and reconstruction for one stationary source."""
     config = config or SyntheticExperimentConfig()
     profile = get_psd_profile(config.profile_name)
     rows = []
@@ -428,7 +424,7 @@ def run_single_source_experiment(
             config,
             run,
             "single_source_psd",
-            "sampled_covariance",
+            "Sampled Covariance (PSD)",
             "psd_mae",
             np.mean(np.abs(difference)),
         )
@@ -437,7 +433,7 @@ def run_single_source_experiment(
             config,
             run,
             "single_source_psd",
-            "sampled_covariance",
+            "Sampled Covariance (PSD)",
             "psd_rmse",
             np.sqrt(np.mean(difference**2)),
         )
@@ -467,7 +463,7 @@ def run_single_source_experiment(
             config,
             run,
             "single_source_reconstruction",
-            "smooth",
+            "Smoothness Reconstruction",
             test_truth,
             smooth_estimate,
             test_observed,
@@ -477,7 +473,7 @@ def run_single_source_experiment(
             config,
             run,
             "single_source_reconstruction",
-            "single_psd",
+            "Single PSD Reconstruction",
             test_truth,
             psd_estimate,
             test_observed,
@@ -531,12 +527,7 @@ def _add_clustering_results(
 def run_clustering_experiment(
     config: SyntheticExperimentConfig | None = None,
 ) -> pd.DataFrame:
-    """Evaluate latent-source clustering independently of reconstruction.
-
-    GMM clustering of complete GFT coefficients is an upper reference.
-    Clustering after smooth reconstruction is the implementable partial-data
-    pipeline described in the thesis.
-    """
+    """Evaluate latent-source clustering independently of reconstruction."""
     config = config or SyntheticExperimentConfig()
     profiles = make_mixture_profiles(config.n_components)
     rows = []
@@ -575,7 +566,7 @@ def run_clustering_experiment(
             config,
             run,
             "source_clustering",
-            "complete_gft",
+            "Complete GFT",
             labels,
             complete_prediction,
         )
@@ -584,7 +575,7 @@ def run_clustering_experiment(
             config,
             run,
             "source_clustering",
-            "smooth_gft",
+            "Smooth GFT (Proposed)",
             labels,
             smooth_prediction,
         )
@@ -635,12 +626,7 @@ def _reconstruct_from_group_psds(
 def run_mixture_reconstruction_experiment(
     config: SyntheticExperimentConfig | None = None,
 ) -> pd.DataFrame:
-    """Compare reconstruction methods for a mixture of PSD sources.
-
-    Compared methods are graph smoothness, one global PSD, PSDs estimated after
-    source clustering, and an oracle grouped-PSD reference using true labels.
-    The clustered method learns both GMM and PSDs only from training signals.
-    """
+    """Compare reconstruction methods for a mixture of PSD sources."""
     config = config or SyntheticExperimentConfig()
     profiles = make_mixture_profiles(config.n_components)
     rows = []
@@ -705,14 +691,14 @@ def run_mixture_reconstruction_experiment(
         predicted_test_labels = gmm.predict(test_features)
 
         estimates = {
-            "smooth": smooth_test,
-            "single_psd": reconstructor.reconstruct_psd(
+            "Smoothness Reconstruction": smooth_test,
+            "Single PSD Reconstruction": reconstructor.reconstruct_psd(
                 test_observed,
                 gamma=gamma_global,
                 alpha=config.alpha,
                 beta=config.beta,
             ),
-            "clustered_psd": _reconstruct_from_group_psds(
+            "Proposed Method": _reconstruct_from_group_psds(
                 reconstructor,
                 test_observed,
                 predicted_test_labels,
@@ -720,7 +706,7 @@ def run_mixture_reconstruction_experiment(
                 config.alpha,
                 config.beta,
             ),
-            "oracle_grouped_psd": _reconstruct_from_group_psds(
+            "Oracle (True Labels)": _reconstruct_from_group_psds(
                 reconstructor,
                 test_observed,
                 test_labels,
@@ -745,7 +731,7 @@ def run_mixture_reconstruction_experiment(
             config,
             run,
             "mixture_assignment",
-            "smooth_gft",
+            "Proposed Method Assignment",
             test_labels,
             predicted_test_labels,
         )
