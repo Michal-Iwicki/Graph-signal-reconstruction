@@ -15,9 +15,9 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import adjusted_rand_score
 
-from graph_reco.clustering import ClusteringEvaluator, GMM_Diag
-from graph_reco.generation import GSPGraph, GraphFactory, SignalGenerator
-from graph_reco.reconstruction import SignalReconstructor
+from src.methods.clustering import ClusteringEvaluator, GMM_Diag
+from src.methods.generation import GSPGraph, GraphFactory, SignalGenerator
+from src.methods.reconstruction import SignalReconstructor
 
 
 PLANNED_SYNTHETIC_VALUES = {

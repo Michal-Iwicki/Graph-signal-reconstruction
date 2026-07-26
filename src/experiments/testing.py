@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from graph_reco.clustering import ClusteringEvaluator, GMM_Diag
-from graph_reco.generation import GraphFactory, SignalGenerator
-from graph_reco.reconstruction import SignalReconstructor
+from src.methods.clustering import ClusteringEvaluator, GMM_Diag
+from src.methods.generation import GraphFactory, SignalGenerator
+from src.methods.reconstruction import SignalReconstructor
 
 
 def _default_low_pass_psd(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
