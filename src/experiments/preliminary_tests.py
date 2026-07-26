@@ -11,6 +11,13 @@ import seaborn as sns
 from src.methods.clustering import ClusteringEvaluator, GMM_Diag
 from src.methods.generation import GraphFactory, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
+from src.experiments._evaluation import (
+    apply_observation_mask,
+    draw_nested_mask_uniforms,
+    estimate_group_psds,
+    generate_mixture_split,
+    reconstruct_from_group_psds,
+)
 
 
 def _default_low_pass_psd(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
@@ -38,6 +45,7 @@ def run_psd_experiment(
     M: int = 1000,
     p_values: Sequence[float] = (1.0, 0.5, 0.05),
     psd_fn: Callable[[np.ndarray, float], np.ndarray] | None = None,
+    seed: int = 42,
 ) -> dict:
     """Compare theoretical and estimated PSDs at several sampling rates.
 
@@ -58,6 +66,8 @@ def run_psd_experiment(
         Graph, theoretical PSD, and a mapping from sampling probability to the
         corresponding estimated PSD.
     """
+    np.random.seed(seed)
+    random_generator = np.random.default_rng(seed)
     graph = GraphFactory.generate_nn_graph(N, k)
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
@@ -71,6 +81,11 @@ def run_psd_experiment(
         profile(eigenvalues, lambda_max)
     )
     estimates = {}
+    complete, _ = generator.generate_signals(M, 1.0, profile)
+    mask_uniforms = draw_nested_mask_uniforms(
+        complete.shape,
+        random_generator,
+    )
 
     figure, axes = plt.subplots(
         1,
@@ -79,7 +94,11 @@ def run_psd_experiment(
         squeeze=False,
     )
     for axis, probability in zip(axes[0], p_values):
-        _, observed = generator.generate_signals(M, probability, profile)
+        observed = apply_observation_mask(
+            complete,
+            probability,
+            mask_uniforms,
+        )
         gamma_estimated = reconstructor.estimate_gamma(observed)
         estimates[probability] = gamma_estimated
 
@@ -124,6 +143,7 @@ def reconstruction_experiment(
     vertices.
     """
     np.random.seed(seed)
+    random_generator = np.random.default_rng(seed)
     graph = GraphFactory.generate_nn_graph(N, k)
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
@@ -136,17 +156,33 @@ def reconstruction_experiment(
     ):
         raise ValueError("head must be None or an integer between 1 and N.")
 
-    _, training_observations = generator.generate_signals(
+    training_truth, _ = generator.generate_signals(
         M_train,
-        p,
+        1.0,
         _default_low_pass_psd,
+    )
+    training_observations = apply_observation_mask(
+        training_truth,
+        p,
+        draw_nested_mask_uniforms(
+            training_truth.shape,
+            random_generator,
+        ),
     )
     gamma_estimated = reconstructor.estimate_gamma(training_observations)
 
-    test_signals, test_observations = generator.generate_signals(
+    test_signals, _ = generator.generate_signals(
         1,
-        p,
+        1.0,
         _default_low_pass_psd,
+    )
+    test_observations = apply_observation_mask(
+        test_signals,
+        p,
+        draw_nested_mask_uniforms(
+            test_signals.shape,
+            random_generator,
+        ),
     )
     truth = test_signals[:, 0]
     observed = test_observations[:, 0]
@@ -239,6 +275,7 @@ def run_mixed_psd_estimation_exp(
     probs: Sequence[float] | None = None,
     psd_names: Sequence[str] | None = None,
     k: int = 25,
+    seed: int = 42,
 ) -> dict:
     """Compare global and source-informed PSD estimates for mixed signals."""
     if psd_funcs is None:
@@ -254,16 +291,25 @@ def run_mixed_psd_estimation_exp(
     if len(psd_names) != len(psd_funcs):
         raise ValueError("psd_names must contain one name per PSD function.")
 
+    np.random.seed(seed)
     graph = GraphFactory.generate_nn_graph(N, k)
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
     eigenvalues = graph.eigenvalues
     lambda_max = float(eigenvalues[-1])
-    _, observed, labels = generator.generate_mixed_signals(
+    complete, _, labels = generator.generate_mixed_signals(
         M,
-        p,
+        1.0,
         psd_funcs,
         probs,
+    )
+    observed = apply_observation_mask(
+        complete,
+        p,
+        draw_nested_mask_uniforms(
+            complete.shape,
+            np.random.default_rng(seed),
+        ),
     )
 
     gamma_global = reconstructor.estimate_gamma(observed)
@@ -341,6 +387,7 @@ def run_mixed_comparison_experiment(
 ) -> pd.DataFrame:
     """Compare class-informed and global PSD reconstruction on two sources."""
     np.random.seed(seed)
+    random_generator = np.random.default_rng(seed)
     graph = GraphFactory.generate_nn_graph(N, k)
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
@@ -357,14 +404,22 @@ def run_mixed_comparison_experiment(
 
     profiles = [psd_a, psd_b]
     names = ["Mid-Band A (Low-Shift)", "Mid-Band B (High-Shift)"]
-    _, training_observations, training_labels = (
-        generator.generate_mixed_signals(
-            M_train,
-            p,
-            profiles,
-            [0.5, 0.5],
-        )
+    split = generate_mixture_split(
+        generator,
+        M_train,
+        M_test,
+        profiles,
+        [0.5, 0.5],
     )
+    training_observations = apply_observation_mask(
+        split.train,
+        p,
+        draw_nested_mask_uniforms(
+            split.train.shape,
+            random_generator,
+        ),
+    )
+    training_labels = split.train_labels
 
     gamma_global = reconstructor.estimate_gamma(training_observations)
     gamma_informed = []
@@ -426,13 +481,15 @@ def run_mixed_comparison_experiment(
     figure_psd.tight_layout()
     plt.show()
 
-    test_signals, test_observations, test_labels = (
-        generator.generate_mixed_signals(
-            M_test,
-            p,
-            profiles,
-            [0.5, 0.5],
-        )
+    test_signals = split.test
+    test_labels = split.test_labels
+    test_observations = apply_observation_mask(
+        test_signals,
+        p,
+        draw_nested_mask_uniforms(
+            test_signals.shape,
+            random_generator,
+        ),
     )
     source_a_indices = np.flatnonzero(test_labels == 0)
     example_index = (
@@ -576,12 +633,13 @@ def gmm_mixed_signal_experiment(
     seed: int = 42,
     refinement_steps: int = 10,
     verbose: bool = False,
+    M_test: int | None = None,
 ) -> dict:
-    """Evaluate spectral GMM clustering on mixed graph signals.
+    """Evaluate spectral GMM clustering on an independent test split.
 
-    When ``psd_rec`` is true, assignments are refined by alternating
-    cluster-specific PSD reconstruction and GMM fitting. Refinement stops early
-    when labels no longer change.
+    When ``psd_rec`` is true, reconstruction/GMM refinement is fitted only on
+    training signals.  The final GMM and train-estimated PSDs are then frozen
+    and used to assign and reconstruct test signals.
     """
     if (
         not isinstance(n_runs, (int, np.integer))
@@ -597,49 +655,113 @@ def gmm_mixed_signal_experiment(
         raise ValueError("refinement_steps must be a positive integer.")
 
     np.random.seed(seed)
+    test_count = M if M_test is None else M_test
     accuracies = []
     cluster_count = len(psd_s)
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
 
     for run in range(n_runs):
-        _, observed, labels = generator.generate_mixed_signals(
+        run_seed = seed + run
+        random_generator = np.random.default_rng(run_seed)
+        split = generate_mixture_split(
+            generator,
             M,
-            p,
+            test_count,
             psd_s,
             probs,
         )
-        reconstructed = (
-            reconstructor.reconstruct_smooth(observed, beta=0.0001)
+        train_observed = apply_observation_mask(
+            split.train,
+            p,
+            draw_nested_mask_uniforms(
+                split.train.shape,
+                random_generator,
+            ),
+        )
+        test_observed = apply_observation_mask(
+            split.test,
+            p,
+            draw_nested_mask_uniforms(
+                split.test.shape,
+                random_generator,
+            ),
+        )
+        train_reconstructed = (
+            reconstructor.reconstruct_smooth(train_observed, beta=0.0001)
             if p < 1.0
-            else observed
+            else train_observed
         )
-        features = ClusteringEvaluator.graph_fourier_features(
+        train_features = ClusteringEvaluator.graph_fourier_features(
             graph,
-            reconstructed,
+            train_reconstructed,
         )
-        gmm = GMM_Diag(cluster_count, random_state=seed + run).fit(features)
-        prediction = gmm.predict(features)
+        gmm = GMM_Diag(
+            cluster_count,
+            random_state=run_seed,
+        ).fit(train_features)
+        train_prediction = gmm.predict(train_features)
 
         if psd_rec:
             for _ in range(refinement_steps):
-                reconstructed = reconstructor.reconstruct_mixed(
-                    observed,
-                    prediction,
+                train_reconstructed = reconstructor.reconstruct_mixed(
+                    train_observed,
+                    train_prediction,
                 )
-                features = ClusteringEvaluator.graph_fourier_features(
+                train_features = ClusteringEvaluator.graph_fourier_features(
                     graph,
-                    reconstructed,
+                    train_reconstructed,
                 )
-                gmm.fit(features)
-                updated_prediction = gmm.predict(features)
+                gmm.fit(train_features)
+                updated_prediction = gmm.predict(train_features)
                 agreement = ClusteringEvaluator.evaluate_accuracy(
-                    prediction,
+                    train_prediction,
                     updated_prediction,
                     cluster_count,
                 )
                 if verbose:
                     print(f"Run {run + 1}: refinement agreement={agreement:.4f}")
+                if np.array_equal(updated_prediction, train_prediction):
+                    train_prediction = updated_prediction
+                    break
+                train_prediction = updated_prediction
+
+        test_reconstructed = (
+            reconstructor.reconstruct_smooth(test_observed, beta=0.0001)
+            if p < 1.0
+            else test_observed
+        )
+        prediction = gmm.predict(
+            ClusteringEvaluator.graph_fourier_features(
+                graph,
+                test_reconstructed,
+            )
+        )
+
+        if psd_rec:
+            train_psds = estimate_group_psds(
+                reconstructor,
+                train_observed,
+                train_prediction,
+                cluster_count,
+                min_cluster_size=1,
+                fallback=reconstructor.estimate_gamma(train_observed),
+            )
+            for _ in range(refinement_steps):
+                test_reconstructed = reconstruct_from_group_psds(
+                    reconstructor,
+                    test_observed,
+                    prediction,
+                    train_psds,
+                    alpha=10.0,
+                    beta=1.0,
+                )
+                updated_prediction = gmm.predict(
+                    ClusteringEvaluator.graph_fourier_features(
+                        graph,
+                        test_reconstructed,
+                    )
+                )
                 if np.array_equal(updated_prediction, prediction):
                     prediction = updated_prediction
                     break
@@ -647,7 +769,7 @@ def gmm_mixed_signal_experiment(
 
         accuracies.append(
             ClusteringEvaluator.evaluate_accuracy(
-                labels,
+                split.test_labels,
                 prediction,
                 cluster_count,
             )

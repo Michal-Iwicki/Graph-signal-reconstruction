@@ -4,8 +4,13 @@ from scipy.special import ndtr
 from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from src.methods.reconstruction import SignalReconstructor
-from src.methods.models import MixedSignalReconstruction
+from src.experiments._evaluation import (
+    apply_observation_mask,
+    draw_nested_mask_uniforms,
+    evaluate_reconstruction_methods,
+    generate_mixture_split,
+    missing_mae,
+)
 
 
 # ============================================================
@@ -15,7 +20,8 @@ from src.methods.models import MixedSignalReconstruction
 N_NODES = 100
 K_NEIGHBORS = 10
 
-N_SIGNALS = 600
+N_TRAIN = 600
+N_TEST = 200
 N_COMPONENTS = 3
 P_OBSERVED = 0.5
 
@@ -135,11 +141,6 @@ def draw_mixture(graph, rng):
 # 4. METRYKA
 # ============================================================
 
-def missing_mae(truth, estimate, observed):
-    missing = np.isnan(observed)
-    return np.mean(np.abs(truth[missing] - estimate[missing]))
-
-
 # ============================================================
 # 5. JEDEN EKSPERYMENT DLA WYLOSOWANEJ MIESZANINY
 # ============================================================
@@ -149,67 +150,73 @@ def run_one(graph, run_id, seed):
     rng = np.random.default_rng(seed)
 
     generator = SignalGenerator(graph)
-    reconstructor = SignalReconstructor(graph)
 
     psd_functions, profile_info = draw_mixture(graph, rng)
 
-    truth, observed, true_labels = generator.generate_mixed_signals(
-        M=N_SIGNALS,
-        p=P_OBSERVED,
-        psd_s=psd_functions,
-        probs=np.full(N_COMPONENTS, 1 / N_COMPONENTS),
+    split = generate_mixture_split(
+        generator,
+        N_TRAIN,
+        N_TEST,
+        psd_functions,
+        np.full(N_COMPONENTS, 1 / N_COMPONENTS),
+    )
+    train_observed = apply_observation_mask(
+        split.train,
+        P_OBSERVED,
+        draw_nested_mask_uniforms(split.train.shape, rng),
+    )
+    test_observed = apply_observation_mask(
+        split.test,
+        P_OBSERVED,
+        draw_nested_mask_uniforms(split.test.shape, rng),
+    )
+    estimates, predicted_labels, clustered_model = (
+        evaluate_reconstruction_methods(
+            graph,
+            train_observed,
+            test_observed,
+            N_COMPONENTS,
+            alpha=ALPHA,
+            beta=PSD_BETA,
+            smooth_beta=SMOOTH_BETA,
+            random_state=seed,
+        )
     )
 
-    # Smoothing
-    smoothing = reconstructor.reconstruct_smooth(
-        observed,
-        beta=SMOOTH_BETA,
+    results = pd.DataFrame(
+        [
+            {
+                "run": run_id,
+                "method": method,
+                "n_train": N_TRAIN,
+                "n_test": N_TEST,
+                "min_train_cluster_size": (
+                    min(clustered_model.train_cluster_sizes.values())
+                    if method == "proposed"
+                    else np.nan
+                ),
+                "fallback_cluster_count": (
+                    len(clustered_model.fallback_clusters)
+                    if method == "proposed"
+                    else np.nan
+                ),
+                "mae": missing_mae(
+                    split.test,
+                    estimate,
+                    test_observed,
+                ),
+                "ari": (
+                    adjusted_rand_score(
+                        split.test_labels,
+                        predicted_labels,
+                    )
+                    if method == "proposed"
+                    else np.nan
+                ),
+            }
+            for method, estimate in estimates.items()
+        ]
     )
-
-    # Basic PSD: jedna PSD dla całej mieszaniny
-    gamma = reconstructor.estimate_gamma(observed)
-    basic_psd = reconstructor.reconstruct_psd(
-        observed,
-        gamma=gamma,
-        alpha=ALPHA,
-        beta=PSD_BETA,
-    )
-
-    # Proposed: clustering i osobna PSD dla każdego klastra
-    proposed_model = MixedSignalReconstruction(graph)
-    proposed = proposed_model.fit_transform(
-        observed,
-        method="clustered_reconstruction",
-        K_list=[N_COMPONENTS],
-        alpha=ALPHA,
-        beta=PSD_BETA,
-        init_beta=SMOOTH_BETA,
-        random_state=seed,
-    )
-
-    results = pd.DataFrame([
-        {
-            "run": run_id,
-            "method": "proposed",
-            "mae": missing_mae(truth, proposed, observed),
-            "ari": adjusted_rand_score(
-                true_labels,
-                proposed_model.last_labels,
-            ),
-        },
-        {
-            "run": run_id,
-            "method": "basic_psd",
-            "mae": missing_mae(truth, basic_psd, observed),
-            "ari": np.nan,
-        },
-        {
-            "run": run_id,
-            "method": "smoothing",
-            "mae": missing_mae(truth, smoothing, observed),
-            "ari": np.nan,
-        },
-    ])
 
     profiles = pd.DataFrame(profile_info)
     profiles.insert(0, "run", run_id)
@@ -252,12 +259,20 @@ if __name__ == "__main__":
     results, profiles = run_many()
 
     summary = (
-        results.groupby("method")["mae"]
-        .agg(["mean", "std", "median"])
-        .sort_values("mean")
+        results.groupby("method")
+        .agg(
+            mae_mean=("mae", "mean"),
+            mae_std=("mae", "std"),
+            mae_median=("mae", "median"),
+            ari_mean=("ari", "mean"),
+            ari_std=("ari", "std"),
+            fallback_clusters_mean=("fallback_cluster_count", "mean"),
+        )
+        .sort_values("mae_mean")
     )
 
     print(summary)
 
     results.to_csv("many_psd_results.csv", index=False)
     profiles.to_csv("many_psd_profiles.csv", index=False)
+    summary.to_csv("many_psd_summary.csv")

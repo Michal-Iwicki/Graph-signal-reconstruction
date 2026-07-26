@@ -6,15 +6,22 @@ from scipy.special import ndtr
 from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from src.methods.reconstruction import SignalReconstructor
-from src.methods.models import MixedSignalReconstruction
+from src.experiments._evaluation import (
+    MixtureSplit,
+    apply_observation_mask,
+    draw_nested_mask_uniforms,
+    evaluate_reconstruction_methods,
+    generate_mixture_split,
+    missing_mae,
+)
 
 
 # ============================================================
 # 1. PARAMETRY WSPÓLNE
 # ============================================================
 
-N_SIGNALS = 600
+N_TRAIN = 600
+N_TEST = 200
 K_NEIGHBORS = 10          # stałe k => podobny stosunek liczby krawędzi do wierzchołków
 N_COMPONENTS = 5
 
@@ -82,68 +89,78 @@ PSD_PROBABILITIES = [0.25, 0.20, 0.20, 0.20, 0.15]
 # 3. METRYKI I PORÓWNANIE METOD
 # ============================================================
 
-def missing_mae(truth, estimate, observed):
-    missing = np.isnan(observed)
-    return float(np.mean(np.abs(truth[missing] - estimate[missing])))
+def compare_methods(
+    graph,
+    p_observed,
+    seed,
+    *,
+    split: MixtureSplit | None = None,
+    train_uniforms=None,
+    test_uniforms=None,
+):
+    """Uczy modele na treningu i raportuje błąd wyłącznie na teście.
 
-
-def compare_methods(graph, p_observed, seed):
+    Opcjonalne ``split`` i macierze uniformów pozwalają wszystkim wartościom
+    widoczności używać tych samych sygnałów oraz zagnieżdżonych masek.
+    """
     np.random.seed(seed)
+    rng = np.random.default_rng(seed)
+    if split is None:
+        split = generate_mixture_split(
+            SignalGenerator(graph),
+            N_TRAIN,
+            N_TEST,
+            PSD_FUNCTIONS,
+            PSD_PROBABILITIES,
+        )
+    if train_uniforms is None:
+        train_uniforms = draw_nested_mask_uniforms(split.train.shape, rng)
+    if test_uniforms is None:
+        test_uniforms = draw_nested_mask_uniforms(split.test.shape, rng)
 
-    generator = SignalGenerator(graph)
-    reconstructor = SignalReconstructor(graph)
-
-    truth, observed, true_labels = generator.generate_mixed_signals(
-        M=N_SIGNALS,
-        p=p_observed,
-        psd_s=PSD_FUNCTIONS,
-        probs=PSD_PROBABILITIES,
+    train_observed = apply_observation_mask(
+        split.train,
+        p_observed,
+        train_uniforms,
     )
-
-    smoothing = reconstructor.reconstruct_smooth(
-        observed,
-        beta=SMOOTH_BETA,
+    test_observed = apply_observation_mask(
+        split.test,
+        p_observed,
+        test_uniforms,
     )
-
-    gamma_global = reconstructor.estimate_gamma(observed)
-    basic_psd = reconstructor.reconstruct_psd(
-        observed,
-        gamma=gamma_global,
-        alpha=ALPHA,
-        beta=PSD_BETA,
+    estimates, predicted_labels, clustered_model = (
+        evaluate_reconstruction_methods(
+            graph,
+            train_observed,
+            test_observed,
+            N_COMPONENTS,
+            alpha=ALPHA,
+            beta=PSD_BETA,
+            smooth_beta=SMOOTH_BETA,
+            random_state=seed,
+        )
     )
-
-    proposed_model = MixedSignalReconstruction(graph)
-    proposed = proposed_model.fit_transform(
-        observed,
-        method="clustered_reconstruction",
-        K_list=[N_COMPONENTS],
-        alpha=ALPHA,
-        beta=PSD_BETA,
-        init_beta=SMOOTH_BETA,
-        min_cluster_size=3,
-        random_state=seed,
-    )
-
     return [
         {
-            "method": "proposed",
-            "mae": missing_mae(truth, proposed, observed),
-            "ari": adjusted_rand_score(
-                true_labels,
-                proposed_model.last_labels,
+            "method": method,
+            "mae": missing_mae(split.test, estimate, test_observed),
+            "min_train_cluster_size": (
+                min(clustered_model.train_cluster_sizes.values())
+                if method == "proposed"
+                else np.nan
             ),
-        },
-        {
-            "method": "basic_psd",
-            "mae": missing_mae(truth, basic_psd, observed),
-            "ari": np.nan,
-        },
-        {
-            "method": "smoothing",
-            "mae": missing_mae(truth, smoothing, observed),
-            "ari": np.nan,
-        },
+            "fallback_cluster_count": (
+                len(clustered_model.fallback_clusters)
+                if method == "proposed"
+                else np.nan
+            ),
+            "ari": (
+                adjusted_rand_score(split.test_labels, predicted_labels)
+                if method == "proposed"
+                else np.nan
+            ),
+        }
+        for method, estimate in estimates.items()
     ]
 
 
@@ -156,8 +173,9 @@ def experiment_number_of_nodes():
 
     for n_nodes in NODE_VALUES:
         for run in range(N_RUNS):
-            seed = SEED + 1000 * n_nodes + run
-            np.random.seed(seed)
+            graph_seed = SEED + 1000 * n_nodes + run
+            data_seed = SEED + run
+            np.random.seed(graph_seed)
 
             # k pozostaje stałe, więc średni stopień i E/N są zbliżone.
             graph = GraphFactory.generate_nn_graph(
@@ -168,7 +186,7 @@ def experiment_number_of_nodes():
             method_results = compare_methods(
                 graph=graph,
                 p_observed=FIXED_VISIBILITY,
-                seed=seed,
+                seed=data_seed,
             )
 
             for result in method_results:
@@ -176,7 +194,11 @@ def experiment_number_of_nodes():
                     "experiment": "number_of_nodes",
                     "n_nodes": n_nodes,
                     "p_observed": FIXED_VISIBILITY,
+                    "n_train": N_TRAIN,
+                    "n_test": N_TEST,
                     "run": run,
+                    "graph_seed": graph_seed,
+                    "data_seed": data_seed,
                     **result,
                 })
 
@@ -199,14 +221,28 @@ def experiment_visibility():
             N=FIXED_NODES,
             k=K_NEIGHBORS,
         )
+        data_seed = SEED + 10_000 * run
+        np.random.seed(data_seed)
+        generator = SignalGenerator(graph)
+        split = generate_mixture_split(
+            generator,
+            N_TRAIN,
+            N_TEST,
+            PSD_FUNCTIONS,
+            PSD_PROBABILITIES,
+        )
+        rng = np.random.default_rng(data_seed)
+        train_uniforms = draw_nested_mask_uniforms(split.train.shape, rng)
+        test_uniforms = draw_nested_mask_uniforms(split.test.shape, rng)
 
         for p_observed in VISIBILITY_VALUES:
-            seed = SEED + 10_000 * run + int(100 * p_observed)
-
             method_results = compare_methods(
                 graph=graph,
                 p_observed=p_observed,
-                seed=seed,
+                seed=data_seed,
+                split=split,
+                train_uniforms=train_uniforms,
+                test_uniforms=test_uniforms,
             )
 
             for result in method_results:
@@ -214,7 +250,11 @@ def experiment_visibility():
                     "experiment": "visibility",
                     "n_nodes": FIXED_NODES,
                     "p_observed": p_observed,
+                    "n_train": N_TRAIN,
+                    "n_test": N_TEST,
                     "run": run,
+                    "graph_seed": graph_seed,
+                    "data_seed": data_seed,
                     **result,
                 })
 
@@ -234,6 +274,9 @@ def summarize(results, parameter):
             mae_std=("mae", "std"),
             ari_mean=("ari", "mean"),
             ari_std=("ari", "std"),
+            min_cluster_size_mean=("min_train_cluster_size", "mean"),
+            fallback_clusters_mean=("fallback_cluster_count", "mean"),
+            n_runs=("mae", "count"),
         )
         .reset_index()
     )

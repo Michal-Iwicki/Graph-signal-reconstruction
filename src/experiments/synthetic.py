@@ -18,6 +18,10 @@ from sklearn.metrics import adjusted_rand_score
 from src.methods.clustering import ClusteringEvaluator, GMM_Diag
 from src.methods.generation import GSPGraph, GraphFactory, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
+from src.experiments._evaluation import (
+    apply_observation_mask,
+    draw_nested_mask_uniforms,
+)
 
 
 PLANNED_SYNTHETIC_VALUES = {
@@ -86,6 +90,7 @@ class SyntheticExperimentConfig:
     barabasi_albert_m: int = 3
     watts_strogatz_neighbors: int = 6
     watts_strogatz_rewiring: float = 0.1
+    target_edge_count: int | None = None
 
     def __post_init__(self):
         """Validate configuration values immediately."""
@@ -109,6 +114,16 @@ class SyntheticExperimentConfig:
         if self.n_components > min(self.n_train, self.n_test):
             raise ValueError(
                 "n_components cannot exceed n_train or n_test."
+            )
+        if self.target_edge_count is not None and (
+            not isinstance(self.target_edge_count, (int, np.integer))
+            or isinstance(self.target_edge_count, bool)
+            or not self.n_nodes - 1
+            <= self.target_edge_count
+            <= self.n_nodes * (self.n_nodes - 1) // 2
+        ):
+            raise ValueError(
+                "target_edge_count must allow a connected simple graph."
             )
         if (
             not np.isfinite(self.observation_probability)
@@ -220,6 +235,35 @@ def _grid_shape(n_nodes: int) -> tuple[int, int]:
     return rows, n_nodes // rows
 
 
+def _match_edge_count(
+    graph: nx.Graph,
+    target_edges: int,
+    random_generator: np.random.Generator,
+) -> GSPGraph:
+    """Minimally add/remove edges while keeping a graph connected."""
+    adjusted = nx.Graph(graph)
+    while adjusted.number_of_edges() > target_edges:
+        edges = list(adjusted.edges())
+        random_generator.shuffle(edges)
+        for first, second in edges:
+            adjusted.remove_edge(first, second)
+            if nx.is_connected(adjusted):
+                break
+            adjusted.add_edge(first, second)
+        else:
+            raise RuntimeError(
+                "Could not remove another edge without disconnecting the graph."
+            )
+
+    while adjusted.number_of_edges() < target_edges:
+        missing_edges = list(nx.non_edges(adjusted))
+        first, second = missing_edges[
+            random_generator.integers(len(missing_edges))
+        ]
+        adjusted.add_edge(first, second)
+    return GSPGraph(adjusted)
+
+
 def create_synthetic_graph(
     config: SyntheticExperimentConfig,
     seed: int,
@@ -236,51 +280,64 @@ def create_synthetic_graph(
                 config.knn_neighbors,
             )
             if nx.is_connected(graph):
-                return graph
-        raise ValueError(
-            "Could not generate a connected k-NN graph. Increase "
-            "knn_neighbors."
-        )
-    if topology == "grid":
+                break
+        else:
+            raise ValueError(
+                "Could not generate a connected k-NN graph. Increase "
+                "knn_neighbors."
+            )
+    elif topology == "grid":
         rows, columns = _grid_shape(config.n_nodes)
-        return GraphFactory.generate_grid_graph(rows, columns)
-    if topology == "erdos_renyi":
-        return GraphFactory.generate_erdos_renyi_graph(
-            config.n_nodes,
-            config.erdos_renyi_probability,
-            seed=seed,
-        )
-    if topology == "barabasi_albert":
-        return GraphFactory.generate_barabasi_albert_graph(
+        graph = GraphFactory.generate_grid_graph(rows, columns)
+    elif topology == "erdos_renyi":
+        if config.target_edge_count is None:
+            graph = GraphFactory.generate_erdos_renyi_graph(
+                config.n_nodes,
+                config.erdos_renyi_probability,
+                seed=seed,
+            )
+        else:
+            random_generator = np.random.default_rng(seed)
+            for _ in range(100):
+                graph_seed = int(
+                    random_generator.integers(0, np.iinfo(np.int32).max)
+                )
+                candidate = nx.gnm_random_graph(
+                    config.n_nodes,
+                    config.target_edge_count,
+                    seed=graph_seed,
+                )
+                if nx.is_connected(candidate):
+                    graph = GSPGraph(candidate)
+                    break
+            else:
+                raise ValueError("Could not generate a connected G(n, m) graph.")
+    elif topology == "barabasi_albert":
+        graph = GraphFactory.generate_barabasi_albert_graph(
             config.n_nodes,
             config.barabasi_albert_m,
             seed=seed,
         )
-    if topology == "watts_strogatz":
-        return GraphFactory.generate_watts_strogatz_graph(
+    elif topology == "watts_strogatz":
+        graph = GraphFactory.generate_watts_strogatz_graph(
             config.n_nodes,
             config.watts_strogatz_neighbors,
             config.watts_strogatz_rewiring,
             seed=seed,
         )
-    choices = ", ".join(PLANNED_SYNTHETIC_VALUES["topology"])
-    raise ValueError(
-        f"Unknown topology {topology!r}. Choose from: {choices}."
-    )
+    else:
+        choices = ", ".join(PLANNED_SYNTHETIC_VALUES["topology"])
+        raise ValueError(
+            f"Unknown topology {topology!r}. Choose from: {choices}."
+        )
 
-
-def _ensure_observed_signal(
-    complete: np.ndarray,
-    observed: np.ndarray,
-    random_generator: np.random.Generator,
-) -> np.ndarray:
-    """Condition rare all-missing realizations on at least one observation."""
-    result = observed.copy()
-    all_missing = np.flatnonzero(np.all(np.isnan(result), axis=0))
-    for column in all_missing:
-        row = int(random_generator.integers(0, result.shape[0]))
-        result[row, column] = complete[row, column]
-    return result
+    if config.target_edge_count is not None:
+        graph = _match_edge_count(
+            graph,
+            config.target_edge_count,
+            np.random.default_rng(seed),
+        )
+    return graph
 
 
 def _generate_mixture(
@@ -290,24 +347,34 @@ def _generate_mixture(
     profiles,
     random_generator: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Generate a mixture containing at least one realization of every source."""
+    """Generate a masked mixture containing every source.
+
+    Complete signals are generated before the observation mask.  Reusing the
+    same seed at a different observation probability therefore keeps the
+    latent signals fixed in one-factor studies.
+    """
     component_count = len(profiles)
     proportions = np.full(component_count, 1.0 / component_count)
     for _ in range(100):
-        complete, observed, labels = generator.generate_mixed_signals(
+        complete, _, labels = generator.generate_mixed_signals(
             M,
-            probability,
+            1.0,
             profiles,
             proportions,
         )
         if len(np.unique(labels)) == component_count:
+            uniforms = draw_nested_mask_uniforms(
+                complete.shape,
+                random_generator,
+            )
+            observed = apply_observation_mask(
+                complete,
+                probability,
+                uniforms,
+            )
             return (
                 complete,
-                _ensure_observed_signal(
-                    complete,
-                    observed,
-                    random_generator,
-                ),
+                observed,
                 labels,
             )
     raise ValueError(
@@ -401,21 +468,41 @@ def run_single_source_experiment(
         np.random.seed(run_seed)
         random_generator = np.random.default_rng(run_seed)
         graph = create_synthetic_graph(config, run_seed)
+        np.random.seed(run_seed)
         generator = SignalGenerator(graph)
         reconstructor = SignalReconstructor(graph)
         true_gamma = reconstructor.normalize_gamma(
             profile(graph.eigenvalues, float(graph.eigenvalues[-1]))
         )
 
-        training_truth, training_observed = generator.generate_signals(
-            config.n_train,
-            config.observation_probability,
+        # Test powstaje przed treningiem, dzięki czemu pozostaje identyczny
+        # w badaniu OFAT zmieniającym wyłącznie ``n_train``.
+        test_truth, _ = generator.generate_signals(
+            config.n_test,
+            1.0,
             profile,
         )
-        training_observed = _ensure_observed_signal(
+        test_observed = apply_observation_mask(
+            test_truth,
+            config.observation_probability,
+            draw_nested_mask_uniforms(
+                test_truth.shape,
+                random_generator,
+            ),
+        )
+
+        training_truth, _ = generator.generate_signals(
+            config.n_train,
+            1.0,
+            profile,
+        )
+        training_observed = apply_observation_mask(
             training_truth,
-            training_observed,
-            random_generator,
+            config.observation_probability,
+            draw_nested_mask_uniforms(
+                training_truth.shape,
+                random_generator,
+            ),
         )
         estimated_gamma = reconstructor.estimate_gamma(training_observed)
         difference = estimated_gamma - true_gamma
@@ -438,16 +525,6 @@ def run_single_source_experiment(
             np.sqrt(np.mean(difference**2)),
         )
 
-        test_truth, test_observed = generator.generate_signals(
-            config.n_test,
-            config.observation_probability,
-            profile,
-        )
-        test_observed = _ensure_observed_signal(
-            test_truth,
-            test_observed,
-            random_generator,
-        )
         smooth_estimate = reconstructor.reconstruct_smooth(
             test_observed,
             beta=config.smooth_beta,
@@ -537,29 +614,54 @@ def run_clustering_experiment(
         np.random.seed(run_seed)
         random_generator = np.random.default_rng(run_seed)
         graph = create_synthetic_graph(config, run_seed)
+        np.random.seed(run_seed)
         generator = SignalGenerator(graph)
-        complete, observed, labels = _generate_mixture(
+        test_complete, test_observed, test_labels = _generate_mixture(
+            generator,
+            config.n_test,
+            config.observation_probability,
+            profiles,
+            random_generator,
+        )
+        train_complete, train_observed, _ = _generate_mixture(
             generator,
             config.n_train,
             config.observation_probability,
             profiles,
             random_generator,
         )
-        smooth = SignalReconstructor(graph).reconstruct_smooth(
-            observed,
+        reconstructor = SignalReconstructor(graph)
+        smooth_train = reconstructor.reconstruct_smooth(
+            train_observed,
             beta=config.smooth_beta,
         )
-        _, complete_prediction = _fit_spectral_gmm(
+        smooth_test = reconstructor.reconstruct_smooth(
+            test_observed,
+            beta=config.smooth_beta,
+        )
+        complete_gmm, _ = _fit_spectral_gmm(
             graph,
-            complete,
+            train_complete,
             config.n_components,
             run_seed,
         )
-        _, smooth_prediction = _fit_spectral_gmm(
+        smooth_gmm, _ = _fit_spectral_gmm(
             graph,
-            smooth,
+            smooth_train,
             config.n_components,
             run_seed,
+        )
+        complete_prediction = complete_gmm.predict(
+            ClusteringEvaluator.graph_fourier_features(
+                graph,
+                test_complete,
+            )
+        )
+        smooth_prediction = smooth_gmm.predict(
+            ClusteringEvaluator.graph_fourier_features(
+                graph,
+                smooth_test,
+            )
         )
         _add_clustering_results(
             rows,
@@ -567,7 +669,7 @@ def run_clustering_experiment(
             run,
             "source_clustering",
             "Complete GFT",
-            labels,
+            test_labels,
             complete_prediction,
         )
         _add_clustering_results(
@@ -576,7 +678,7 @@ def run_clustering_experiment(
             run,
             "source_clustering",
             "Smooth GFT (Proposed)",
-            labels,
+            test_labels,
             smooth_prediction,
         )
 
@@ -636,8 +738,16 @@ def run_mixture_reconstruction_experiment(
         np.random.seed(run_seed)
         random_generator = np.random.default_rng(run_seed)
         graph = create_synthetic_graph(config, run_seed)
+        np.random.seed(run_seed)
         generator = SignalGenerator(graph)
         reconstructor = SignalReconstructor(graph)
+        test_truth, test_observed, test_labels = _generate_mixture(
+            generator,
+            config.n_test,
+            config.observation_probability,
+            profiles,
+            random_generator,
+        )
         train_truth, train_observed, train_labels = _generate_mixture(
             generator,
             config.n_train,
@@ -646,13 +756,6 @@ def run_mixture_reconstruction_experiment(
             random_generator,
         )
         del train_truth
-        test_truth, test_observed, test_labels = _generate_mixture(
-            generator,
-            config.n_test,
-            config.observation_probability,
-            profiles,
-            random_generator,
-        )
 
         gamma_global = reconstructor.estimate_gamma(train_observed)
         oracle_psds = _estimate_group_psds(
@@ -816,10 +919,42 @@ def run_planned_parameter_study(
         if values is None
         else values
     )
+    baseline = config or SyntheticExperimentConfig()
+    if parameter == "topology" and baseline.target_edge_count is None:
+        rows, columns = _grid_shape(baseline.n_nodes)
+        target_edges = (
+            rows * max(0, columns - 1)
+            + columns * max(0, rows - 1)
+        )
+        average_degree = 2 * target_edges / baseline.n_nodes
+        knn_neighbors = max(
+            1,
+            min(baseline.n_nodes - 1, int(np.ceil(average_degree)) - 1),
+        )
+        ba_m = max(
+            1,
+            min(baseline.n_nodes - 1, int(round(target_edges / baseline.n_nodes))),
+        )
+        ws_neighbors = max(2, int(2 * round(average_degree / 2)))
+        if ws_neighbors >= baseline.n_nodes:
+            ws_neighbors = baseline.n_nodes - 1
+            if ws_neighbors % 2:
+                ws_neighbors -= 1
+        baseline = replace(
+            baseline,
+            target_edge_count=target_edges,
+            knn_neighbors=knn_neighbors,
+            erdos_renyi_probability=(
+                2 * target_edges
+                / (baseline.n_nodes * (baseline.n_nodes - 1))
+            ),
+            barabasi_albert_m=ba_m,
+            watts_strogatz_neighbors=ws_neighbors,
+        )
     return run_one_factor_study(
         parameter,
         selected_values,
-        config=config,
+        config=baseline,
         experiments=_PLANNED_EXPERIMENTS[parameter],
     )
 

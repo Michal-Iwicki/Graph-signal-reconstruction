@@ -7,6 +7,15 @@ from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GraphFactory, SignalGenerator
 from src.methods.models import MixedSignalReconstruction
+from src.methods.clustering import ClusteringEvaluator
+from src.methods.reconstruction import SignalReconstructor
+from src.experiments._evaluation import (
+    apply_observation_mask,
+    draw_nested_mask_uniforms,
+    generate_mixture_split,
+    missing_mae,
+    missing_rmse,
+)
 
 
 # ============================================================
@@ -15,7 +24,8 @@ from src.methods.models import MixedSignalReconstruction
 
 N_NODES = 100
 K_NEIGHBORS = 10
-N_SIGNALS = 600
+N_TRAIN = 600
+N_TEST = 200
 P_OBSERVED = 0.5
 N_COMPONENTS = 5
 
@@ -78,17 +88,6 @@ PSD_PROBABILITIES = [0.25, 0.20, 0.20, 0.20, 0.15]
 # 3. METRYKI
 # ============================================================
 
-def missing_mae(truth, estimate, observed):
-    missing = np.isnan(observed)
-    return float(np.mean(np.abs(truth[missing] - estimate[missing])))
-
-
-def missing_rmse(truth, estimate, observed):
-    missing = np.isnan(observed)
-    error = truth[missing] - estimate[missing]
-    return float(np.sqrt(np.mean(error**2)))
-
-
 # ============================================================
 # 4. TESTOWANE METODY
 # ============================================================
@@ -102,6 +101,15 @@ METHODS = {
         },
     },
 
+    # Jedno PSD estymowane na całym zbiorze treningowym.
+    "global_psd": {
+        "method": "global_psd",
+        "kwargs": {
+            "alpha": ALPHA,
+            "beta": PSD_BETA,
+        },
+    },
+
     # Metoda bazowa: smoothing -> clustering -> PSD reconstruction.
     "clustered": {
         "method": "clustered_reconstruction",
@@ -110,7 +118,7 @@ METHODS = {
             "alpha": ALPHA,
             "beta": PSD_BETA,
             "init_beta": INIT_BETA,
-            "min_cluster_size": 3,
+            "min_cluster_size": 1,
         },
     },
 
@@ -123,7 +131,7 @@ METHODS = {
             "alpha": ALPHA,
             "beta": PSD_BETA,
             "init_beta": INIT_BETA,
-            "min_cluster_size": 3,
+            "min_cluster_size": 1,
         },
     },
 
@@ -143,20 +151,81 @@ METHODS = {
 
 
 # ============================================================
-# 5. JEDNO POWTÓRZENIE
+# 5. KLASYFIKACJA NOWYCH SYGNAŁÓW
+# ============================================================
+
+def predict_from_training_partition(train_features, labels, test_features):
+    """Klasyfikuje test bez używania jego prawdziwych etykiet.
+
+    Dla każdego klastra wyznaczany jest diagonalny model Gaussa w przestrzeni
+    GFT. Numery klas pozostają zgodne z PSD zapisanymi przez trenowany model.
+    """
+    assignments = np.asarray(labels)
+    clusters = np.unique(assignments)
+    scores = np.empty((test_features.shape[0], len(clusters)), dtype=float)
+
+    for index, cluster in enumerate(clusters):
+        selected = assignments == cluster
+        cluster_features = train_features[selected]
+        mean = np.mean(cluster_features, axis=0)
+        variance = np.var(cluster_features, axis=0) + 1e-6
+        log_prior = np.log(np.mean(selected))
+        scores[:, index] = (
+            log_prior
+            - 0.5 * np.sum(np.log(2 * np.pi * variance))
+            - 0.5 * np.sum(
+                (test_features - mean) ** 2 / variance,
+                axis=1,
+            )
+        )
+    return clusters[np.argmax(scores, axis=1)]
+
+
+# ============================================================
+# 6. JEDNO POWTÓRZENIE
 # ============================================================
 
 def run_one(graph, run, seed):
+    """Trenuje każdy wariant na treningu i ocenia na niezależnym teście."""
     np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     generator = SignalGenerator(graph)
-    truth, observed, true_labels = generator.generate_mixed_signals(
-        M=N_SIGNALS,
-        p=P_OBSERVED,
-        psd_s=PSD_FUNCTIONS,
-        probs=PSD_PROBABILITIES,
+    split = generate_mixture_split(
+        generator,
+        N_TRAIN,
+        N_TEST,
+        PSD_FUNCTIONS,
+        PSD_PROBABILITIES,
+    )
+    train_observed = apply_observation_mask(
+        split.train,
+        P_OBSERVED,
+        draw_nested_mask_uniforms(split.train.shape, rng),
+    )
+    test_observed = apply_observation_mask(
+        split.test,
+        P_OBSERVED,
+        draw_nested_mask_uniforms(split.test.shape, rng),
     )
 
+    reconstructor = SignalReconstructor(graph)
+    smooth_train = reconstructor.reconstruct_smooth(
+        train_observed,
+        beta=INIT_BETA,
+    )
+    smooth_test = reconstructor.reconstruct_smooth(
+        test_observed,
+        beta=INIT_BETA,
+    )
+    train_features = ClusteringEvaluator.graph_fourier_features(
+        graph,
+        smooth_train,
+    )
+    test_features = ClusteringEvaluator.graph_fourier_features(
+        graph,
+        smooth_test,
+    )
     rows = []
 
     for method_name, specification in METHODS.items():
@@ -164,28 +233,68 @@ def run_one(graph, run, seed):
 
         kwargs = {
             **specification["kwargs"],
-            "random_state": seed,
         }
+        if method_name not in {"smoothness", "global_psd"}:
+            kwargs["random_state"] = seed
 
-        estimate = model.fit_transform(
-            observed,
-            method=specification["method"],
-            **kwargs,
-        )
+        if method_name == "smoothness":
+            estimate = smooth_test
+            predicted_labels = None
+        else:
+            model.fit_transform(
+                train_observed,
+                method=specification["method"],
+                **kwargs,
+            )
+            if method_name == "global_psd":
+                estimate = model.transfer_reconstruction(
+                    test_observed,
+                    graph,
+                    alpha=ALPHA,
+                    beta=PSD_BETA,
+                )
+                predicted_labels = None
+            else:
+                predicted_labels = predict_from_training_partition(
+                    train_features,
+                    model.last_labels,
+                    test_features,
+                )
+                estimate = model.transfer_reconstruction(
+                    test_observed,
+                    graph,
+                    labels=predicted_labels,
+                    alpha=ALPHA,
+                    beta=PSD_BETA,
+                )
 
         ari = (
-            adjusted_rand_score(true_labels, model.last_labels)
-            if model.last_labels is not None
+            adjusted_rand_score(split.test_labels, predicted_labels)
+            if predicted_labels is not None
             else np.nan
         )
 
         rows.append({
             "run": run,
             "method": method_name,
-            "mae": missing_mae(truth, estimate, observed),
-            "rmse": missing_rmse(truth, estimate, observed),
+            "n_train": N_TRAIN,
+            "n_test": N_TEST,
+            "mae": missing_mae(split.test, estimate, test_observed),
+            "rmse": missing_rmse(split.test, estimate, test_observed),
             "ari": ari,
+            "min_train_cluster_size": (
+                int(
+                    min(
+                        np.sum(model.last_labels == cluster)
+                        for cluster in np.unique(model.last_labels)
+                    )
+                )
+                if model.last_labels is not None
+                and method_name != "global_psd"
+                else np.nan
+            ),
             "selected_k": model.best_K_,
+            "train_cost": model.best_score_,
             "cost": model.best_score_,
         })
 
@@ -193,7 +302,7 @@ def run_one(graph, run, seed):
 
 
 # ============================================================
-# 6. WIELE POWTÓRZEŃ
+# 7. WIELE POWTÓRZEŃ
 # ============================================================
 
 def experiment_model_improvements():
@@ -202,7 +311,7 @@ def experiment_model_improvements():
     for run in range(N_RUNS):
         seed = SEED + run
 
-        # Nowy graf i nowe dane w każdym runie, ale identyczne dla trzech metod.
+        # Nowy graf i dane w każdym runie, wspólne dla wszystkich metod.
         np.random.seed(seed)
         graph = GraphFactory.generate_nn_graph(
             N=N_NODES,
@@ -215,7 +324,7 @@ def experiment_model_improvements():
 
 
 # ============================================================
-# 7. PODSUMOWANIE
+# 8. PODSUMOWANIE
 # ============================================================
 
 def summarize(results):
@@ -229,6 +338,7 @@ def summarize(results):
             rmse_std=("rmse", "std"),
             ari_mean=("ari", "mean"),
             ari_std=("ari", "std"),
+            n_runs=("mae", "count"),
         )
         .sort_values("mae_mean")
         .reset_index()
@@ -236,7 +346,7 @@ def summarize(results):
 
 
 # ============================================================
-# 8. START
+# 9. START
 # ============================================================
 
 if __name__ == "__main__":
