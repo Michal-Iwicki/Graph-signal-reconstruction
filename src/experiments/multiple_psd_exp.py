@@ -1,15 +1,14 @@
 import numpy as np
 import pandas as pd
-from scipy.special import ndtr
-from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from src.experiments._evaluation import (
-    apply_observation_mask,
-    draw_nested_mask_uniforms,
+from experiments._helper import (
+    edge_skewed_psd,
     evaluate_reconstruction_methods,
-    generate_mixture_split,
-    missing_mae,
+    flat_band_psd,
+    gaussian_psd,
+    generate_observed_mixture_split,
+    reconstruction_metric_rows,
 )
 
 
@@ -32,7 +31,7 @@ ALPHA = 10.0
 PSD_BETA = 1.0
 SMOOTH_BETA = 0.1
 
-PSD_TYPES = ["flat", "gaussian", "skewed", "low_band", "high_band"]
+PSD_TYPES = ["flat", "gaussian", "low_band", "high_band"]
 
 
 # ============================================================
@@ -40,37 +39,15 @@ PSD_TYPES = ["flat", "gaussian", "skewed", "low_band", "high_band"]
 # ============================================================
 
 def make_psd(psd_type, parameters):
-    def psd(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-
-        if psd_type == "flat":
-            values = (
-                (x >= parameters["low"])
-                & (x <= parameters["high"])
-            ).astype(float)
-
-        elif psd_type == "gaussian":
-            mean = parameters["mean"]
-            variance = parameters["variance"]
-            values = np.exp(-0.5 * (x - mean) ** 2 / variance)
-
-        elif psd_type == "skewed":
-            z = (x - parameters["location"]) / parameters["scale"]
-            values = 2 * np.exp(-0.5 * z**2) * ndtr(parameters["skew"] * z)
-
-        elif psd_type == "low_band":
-            values = (x <= parameters["cutoff"]).astype(float)
-
-        elif psd_type == "high_band":
-            values = (x >= parameters["cutoff"]).astype(float)
-
-        else:
-            raise ValueError(f"Nieznany typ PSD: {psd_type}")
-
-        maximum = values.max()
-        return values / maximum if maximum > 0 else values
-
-    return psd
+    if psd_type == "flat":
+        return flat_band_psd(parameters["low"], parameters["high"])
+    if psd_type == "gaussian":
+        return gaussian_psd(parameters["mean"], parameters["variance"])
+    if psd_type == "low_band":
+        return edge_skewed_psd(parameters["scale"], side="low")
+    if psd_type == "high_band":
+        return edge_skewed_psd(parameters["scale"], side="high")
+    raise ValueError(f"Nieznany typ PSD: {psd_type}")
 
 
 # ============================================================
@@ -89,18 +66,11 @@ def draw_psd(psd_type, rng):
             "variance": rng.uniform(0.0025, 0.025),
         }
 
-    elif psd_type == "skewed":
-        parameters = {
-            "location": rng.uniform(0.1, 0.9),
-            "scale": rng.uniform(0.05, 0.18),
-            "skew": rng.uniform(-10.0, 10.0),
-        }
-
     elif psd_type == "low_band":
-        parameters = {"cutoff": rng.uniform(0.12, 0.4)}
+        parameters = {"scale": rng.uniform(0.08, 0.22)}
 
     elif psd_type == "high_band":
-        parameters = {"cutoff": rng.uniform(0.6, 0.88)}
+        parameters = {"scale": rng.uniform(0.08, 0.22)}
 
     else:
         raise ValueError(f"Nieznany typ PSD: {psd_type}")
@@ -153,22 +123,14 @@ def run_one(graph, run_id, seed):
 
     psd_functions, profile_info = draw_mixture(graph, rng)
 
-    split = generate_mixture_split(
+    split, train_observed, test_observed = generate_observed_mixture_split(
         generator,
         N_TRAIN,
         N_TEST,
         psd_functions,
         np.full(N_COMPONENTS, 1 / N_COMPONENTS),
-    )
-    train_observed = apply_observation_mask(
-        split.train,
         P_OBSERVED,
-        draw_nested_mask_uniforms(split.train.shape, rng),
-    )
-    test_observed = apply_observation_mask(
-        split.test,
-        P_OBSERVED,
-        draw_nested_mask_uniforms(split.test.shape, rng),
+        rng,
     )
     estimates, predicted_labels, clustered_model = (
         evaluate_reconstruction_methods(
@@ -183,40 +145,22 @@ def run_one(graph, run_id, seed):
         )
     )
 
-    results = pd.DataFrame(
-        [
-            {
-                "run": run_id,
-                "method": method,
-                "n_train": N_TRAIN,
-                "n_test": N_TEST,
-                "min_train_cluster_size": (
-                    min(clustered_model.train_cluster_sizes.values())
-                    if method == "proposed"
-                    else np.nan
-                ),
-                "fallback_cluster_count": (
-                    len(clustered_model.fallback_clusters)
-                    if method == "proposed"
-                    else np.nan
-                ),
-                "mae": missing_mae(
-                    split.test,
-                    estimate,
-                    test_observed,
-                ),
-                "ari": (
-                    adjusted_rand_score(
-                        split.test_labels,
-                        predicted_labels,
-                    )
-                    if method == "proposed"
-                    else np.nan
-                ),
-            }
-            for method, estimate in estimates.items()
-        ]
-    )
+    results = pd.DataFrame([
+        {
+            "run": run_id,
+            "n_train": N_TRAIN,
+            "n_test": N_TEST,
+            **row,
+        }
+        for row in reconstruction_metric_rows(
+            split.test,
+            test_observed,
+            split.test_labels,
+            estimates,
+            predicted_labels,
+            clustered_model,
+        )
+    ])
 
     profiles = pd.DataFrame(profile_info)
     profiles.insert(0, "run", run_id)

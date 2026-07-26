@@ -2,17 +2,16 @@
 
 import numpy as np
 import pandas as pd
-from scipy.special import ndtr
 from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GraphFactory, SignalGenerator
 from src.methods.models import MixedSignalReconstruction
 from src.methods.clustering import ClusteringEvaluator
 from src.methods.reconstruction import SignalReconstructor
-from src.experiments._evaluation import (
-    apply_observation_mask,
-    draw_nested_mask_uniforms,
-    generate_mixture_split,
+from experiments._helper import (
+    REFERENCE_PSD_PROBABILITIES,
+    REFERENCE_PSD_PROFILES,
+    generate_observed_mixture_split,
     missing_mae,
     missing_rmse,
 )
@@ -41,74 +40,26 @@ TOL = 1e-4
 
 
 # ============================================================
-# 2. STAŁA MIESZANINA PSD
-# ============================================================
-
-def normalize(values):
-    values = np.maximum(np.asarray(values, dtype=float), 0.0)
-    maximum = values.max()
-    return values / maximum if maximum > 0 else values
-
-
-def gaussian_psd(mean, variance):
-    def profile(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-        return normalize(np.exp(-0.5 * (x - mean) ** 2 / variance))
-    return profile
-
-
-def flat_band_psd(low, high):
-    def profile(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-        return ((x >= low) & (x <= high)).astype(float)
-    return profile
-
-
-def skewed_psd(location, scale, skew):
-    def profile(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-        z = (x - location) / scale
-        values = 2.0 * np.exp(-0.5 * z**2) * ndtr(skew * z)
-        return normalize(values)
-    return profile
-
-
-PSD_FUNCTIONS = [
-    gaussian_psd(mean=0.10, variance=0.006),
-    gaussian_psd(mean=0.30, variance=0.010),
-    flat_band_psd(low=0.40, high=0.60),
-    skewed_psd(location=0.65, scale=0.10, skew=5.0),
-    gaussian_psd(mean=0.85, variance=0.008),
-]
-
-PSD_PROBABILITIES = [0.25, 0.20, 0.20, 0.20, 0.15]
-
-
-# ============================================================
-# 3. METRYKI
-# ============================================================
-
-# ============================================================
-# 4. TESTOWANE METODY
+# 2. TESTOWANE METODY
 # ============================================================
 
 METHODS = {
-    # Klasyczna rekonstrukcja oparta wyłącznie na gładkości grafowej.
-    "smoothness": {
-        "method": "smooth",
-        "kwargs": {
-            "beta": INIT_BETA,
-        },
-    },
+    # # Klasyczna rekonstrukcja oparta wyłącznie na gładkości grafowej.
+    # "smoothness": {
+    #     "method": "smooth",
+    #     "kwargs": {
+    #         "beta": INIT_BETA,
+    #     },
+    # },
 
-    # Jedno PSD estymowane na całym zbiorze treningowym.
-    "global_psd": {
-        "method": "global_psd",
-        "kwargs": {
-            "alpha": ALPHA,
-            "beta": PSD_BETA,
-        },
-    },
+    # # Jedno PSD estymowane na całym zbiorze treningowym.
+    # "global_psd": {
+    #     "method": "global_psd",
+    #     "kwargs": {
+    #         "alpha": ALPHA,
+    #         "beta": PSD_BETA,
+    #     },
+    # },
 
     # Metoda bazowa: smoothing -> clustering -> PSD reconstruction.
     "clustered": {
@@ -151,7 +102,7 @@ METHODS = {
 
 
 # ============================================================
-# 5. KLASYFIKACJA NOWYCH SYGNAŁÓW
+# 3. KLASYFIKACJA NOWYCH SYGNAŁÓW
 # ============================================================
 
 def predict_from_training_partition(train_features, labels, test_features):
@@ -182,7 +133,7 @@ def predict_from_training_partition(train_features, labels, test_features):
 
 
 # ============================================================
-# 6. JEDNO POWTÓRZENIE
+# 4. JEDNO POWTÓRZENIE
 # ============================================================
 
 def run_one(graph, run, seed):
@@ -191,22 +142,14 @@ def run_one(graph, run, seed):
     rng = np.random.default_rng(seed)
 
     generator = SignalGenerator(graph)
-    split = generate_mixture_split(
+    split, train_observed, test_observed = generate_observed_mixture_split(
         generator,
         N_TRAIN,
         N_TEST,
-        PSD_FUNCTIONS,
-        PSD_PROBABILITIES,
-    )
-    train_observed = apply_observation_mask(
-        split.train,
+        REFERENCE_PSD_PROFILES,
+        REFERENCE_PSD_PROBABILITIES,
         P_OBSERVED,
-        draw_nested_mask_uniforms(split.train.shape, rng),
-    )
-    test_observed = apply_observation_mask(
-        split.test,
-        P_OBSERVED,
-        draw_nested_mask_uniforms(split.test.shape, rng),
+        rng,
     )
 
     reconstructor = SignalReconstructor(graph)
@@ -302,7 +245,7 @@ def run_one(graph, run, seed):
 
 
 # ============================================================
-# 7. WIELE POWTÓRZEŃ
+# 5. WIELE POWTÓRZEŃ
 # ============================================================
 
 def experiment_model_improvements():
@@ -324,7 +267,7 @@ def experiment_model_improvements():
 
 
 # ============================================================
-# 8. PODSUMOWANIE
+# 6. PODSUMOWANIE
 # ============================================================
 
 def summarize(results):
@@ -346,7 +289,7 @@ def summarize(results):
 
 
 # ============================================================
-# 9. START
+# 7. START
 # ============================================================
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import seaborn as sns
 from src.methods.clustering import ClusteringEvaluator, GMM_Diag
 from src.methods.generation import GraphFactory, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
-from src.experiments._evaluation import (
+from experiments._helper import (
     apply_observation_mask,
     draw_nested_mask_uniforms,
     estimate_group_psds,

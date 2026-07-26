@@ -2,17 +2,17 @@
 
 import numpy as np
 import pandas as pd
-from scipy.special import ndtr
-from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from src.experiments._evaluation import (
+from experiments._helper import (
     MixtureSplit,
+    REFERENCE_PSD_PROBABILITIES,
+    REFERENCE_PSD_PROFILES,
     apply_observation_mask,
     draw_nested_mask_uniforms,
     evaluate_reconstruction_methods,
     generate_mixture_split,
-    missing_mae,
+    reconstruction_metric_rows,
 )
 
 
@@ -42,51 +42,7 @@ VISIBILITY_VALUES = [0.1, 0.2, 0.5, 0.8]
 
 
 # ============================================================
-# 2. STAŁE PROFILE PSD
-# ============================================================
-
-def normalize(values):
-    values = np.maximum(np.asarray(values, dtype=float), 0.0)
-    return values / values.max() if values.max() > 0 else values
-
-
-def gaussian_psd(mean, variance):
-    def profile(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-        return normalize(np.exp(-0.5 * (x - mean) ** 2 / variance))
-    return profile
-
-
-def flat_band_psd(low, high):
-    def profile(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-        return ((x >= low) & (x <= high)).astype(float)
-    return profile
-
-
-def skewed_psd(location, scale, skew):
-    def profile(eigenvalues, lambda_max):
-        x = eigenvalues / lambda_max
-        z = (x - location) / scale
-        values = 2 * np.exp(-0.5 * z**2) * ndtr(skew * z)
-        return normalize(values)
-    return profile
-
-
-# Ta sama mieszanina jest używana we wszystkich eksperymentach.
-PSD_FUNCTIONS = [
-    gaussian_psd(mean=0.10, variance=0.006),       # low
-    gaussian_psd(mean=0.30, variance=0.010),       # low-mid
-    flat_band_psd(low=0.40, high=0.60),            # mid band
-    skewed_psd(location=0.65, scale=0.10, skew=5), # skewed high
-    gaussian_psd(mean=0.85, variance=0.008),       # high
-]
-
-PSD_PROBABILITIES = [0.25, 0.20, 0.20, 0.20, 0.15]
-
-
-# ============================================================
-# 3. METRYKI I PORÓWNANIE METOD
+# 2. METRYKI I PORÓWNANIE METOD
 # ============================================================
 
 def compare_methods(
@@ -110,8 +66,8 @@ def compare_methods(
             SignalGenerator(graph),
             N_TRAIN,
             N_TEST,
-            PSD_FUNCTIONS,
-            PSD_PROBABILITIES,
+            REFERENCE_PSD_PROFILES,
+            REFERENCE_PSD_PROBABILITIES,
         )
     if train_uniforms is None:
         train_uniforms = draw_nested_mask_uniforms(split.train.shape, rng)
@@ -140,32 +96,18 @@ def compare_methods(
             random_state=seed,
         )
     )
-    return [
-        {
-            "method": method,
-            "mae": missing_mae(split.test, estimate, test_observed),
-            "min_train_cluster_size": (
-                min(clustered_model.train_cluster_sizes.values())
-                if method == "proposed"
-                else np.nan
-            ),
-            "fallback_cluster_count": (
-                len(clustered_model.fallback_clusters)
-                if method == "proposed"
-                else np.nan
-            ),
-            "ari": (
-                adjusted_rand_score(split.test_labels, predicted_labels)
-                if method == "proposed"
-                else np.nan
-            ),
-        }
-        for method, estimate in estimates.items()
-    ]
+    return reconstruction_metric_rows(
+        split.test,
+        test_observed,
+        split.test_labels,
+        estimates,
+        predicted_labels,
+        clustered_model,
+    )
 
 
 # ============================================================
-# 4. EKSPERYMENT: LICZBA WIERZCHOŁKÓW
+# 3. EKSPERYMENT: LICZBA WIERZCHOŁKÓW
 # ============================================================
 
 def experiment_number_of_nodes():
@@ -206,7 +148,7 @@ def experiment_number_of_nodes():
 
 
 # ============================================================
-# 5. EKSPERYMENT: PRAWDOPODOBIEŃSTWO OBSERWACJI
+# 4. EKSPERYMENT: PRAWDOPODOBIEŃSTWO OBSERWACJI
 # ============================================================
 
 def experiment_visibility():
@@ -228,8 +170,8 @@ def experiment_visibility():
             generator,
             N_TRAIN,
             N_TEST,
-            PSD_FUNCTIONS,
-            PSD_PROBABILITIES,
+            REFERENCE_PSD_PROFILES,
+            REFERENCE_PSD_PROBABILITIES,
         )
         rng = np.random.default_rng(data_seed)
         train_uniforms = draw_nested_mask_uniforms(split.train.shape, rng)
@@ -262,7 +204,7 @@ def experiment_visibility():
 
 
 # ============================================================
-# 6. PODSUMOWANIE
+# 5. PODSUMOWANIE
 # ============================================================
 
 def summarize(results, parameter):
@@ -283,7 +225,7 @@ def summarize(results, parameter):
 
 
 # ============================================================
-# 7. START
+# 6. START
 # ============================================================
 
 if __name__ == "__main__":

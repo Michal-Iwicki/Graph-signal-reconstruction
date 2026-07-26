@@ -1,15 +1,15 @@
-"""Shared helpers for leakage-free synthetic experiment evaluation.
+"""Shared PSD, data-preparation, and evaluation helpers for experiments.
 
-The functions in this module deliberately separate complete signal generation,
-observation masking, model fitting, and test-set reconstruction.  This makes it
-possible to reuse the same complete signals and nested masks in one-factor
-studies without estimating a PSD on the signals used for final evaluation.
+The functions deliberately separate complete signal generation, observation
+masking, model fitting, and test-set reconstruction. This makes it possible to
+reuse latent signals and nested masks without leaking test data into training.
 """
 
 from dataclasses import dataclass
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
+from sklearn.metrics import adjusted_rand_score
 
 from src.methods.clustering import ClusteringEvaluator, GMM_Diag
 from src.methods.generation import GSPGraph, SignalGenerator
@@ -34,6 +34,68 @@ class ClusteredPSDModel:
     psds: dict[int, np.ndarray]
     train_cluster_sizes: dict[int, int]
     fallback_clusters: tuple[int, ...]
+
+
+def normalize_psd(values: np.ndarray) -> np.ndarray:
+    """Clip a PSD profile to non-negative values and normalize its maximum."""
+    normalized = np.maximum(np.asarray(values, dtype=float), 0.0)
+    maximum = float(np.max(normalized))
+    return normalized / maximum if maximum > 0 else normalized
+
+
+def gaussian_psd(
+    mean: float,
+    variance: float,
+) -> Callable[[np.ndarray, float], np.ndarray]:
+    """Create a Gaussian profile on normalized graph frequencies."""
+
+    def profile(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
+        x = np.asarray(eigenvalues, dtype=float) / lambda_max
+        values = np.exp(-0.5 * (x - mean) ** 2 / variance)
+        return normalize_psd(values)
+
+    return profile
+
+
+def edge_skewed_psd(
+    scale: float,
+    side: str,
+) -> Callable[[np.ndarray, float], np.ndarray]:
+    """Create a smooth half-Gaussian anchored at a spectral boundary."""
+    if side not in {"low", "high"}:
+        raise ValueError("side must be 'low' or 'high'.")
+
+    def profile(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
+        x = np.asarray(eigenvalues, dtype=float) / lambda_max
+        distance = x if side == "low" else 1.0 - x
+        values = np.exp(-0.5 * (distance / scale) ** 2)
+        return normalize_psd(values)
+
+    return profile
+
+
+def flat_band_psd(
+    low: float,
+    high: float,
+) -> Callable[[np.ndarray, float], np.ndarray]:
+    """Create a flat PSD supported on one normalized frequency interval."""
+
+    def profile(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
+        x = np.asarray(eigenvalues, dtype=float) / lambda_max
+        return ((x >= low) & (x <= high)).astype(float)
+
+    return profile
+
+
+REFERENCE_PSD_PROFILES = (
+    edge_skewed_psd(scale=0.12, side="low"),
+    gaussian_psd(mean=0.30, variance=0.010),
+    flat_band_psd(low=0.40, high=0.60),
+    gaussian_psd(mean=0.70, variance=0.010),
+    edge_skewed_psd(scale=0.12, side="high"),
+)
+
+REFERENCE_PSD_PROBABILITIES = (0.25, 0.20, 0.20, 0.20, 0.15)
 
 
 def draw_nested_mask_uniforms(
@@ -111,6 +173,36 @@ def generate_mixture_split(
         "Could not draw every component in both train and test splits. "
         "Increase split sizes or reduce the component count."
     )
+
+
+def generate_observed_mixture_split(
+    generator: SignalGenerator,
+    n_train: int,
+    n_test: int,
+    profiles: Sequence,
+    probabilities: Sequence[float],
+    observation_probability: float,
+    random_generator: np.random.Generator,
+) -> tuple[MixtureSplit, np.ndarray, np.ndarray]:
+    """Generate a complete mixture split and independently mask train/test."""
+    split = generate_mixture_split(
+        generator,
+        n_train,
+        n_test,
+        profiles,
+        probabilities,
+    )
+    train_observed = apply_observation_mask(
+        split.train,
+        observation_probability,
+        draw_nested_mask_uniforms(split.train.shape, random_generator),
+    )
+    test_observed = apply_observation_mask(
+        split.test,
+        observation_probability,
+        draw_nested_mask_uniforms(split.test.shape, random_generator),
+    )
+    return split, train_observed, test_observed
 
 
 def estimate_group_psds(
@@ -302,6 +394,35 @@ def missing_mae(
     if not np.any(missing):
         return float("nan")
     return float(np.mean(np.abs(truth[missing] - estimate[missing])))
+
+
+def reconstruction_metric_rows(
+    truth: np.ndarray,
+    observed: np.ndarray,
+    true_labels: np.ndarray,
+    estimates: dict[str, np.ndarray],
+    predicted_labels: np.ndarray,
+    clustered_model: ClusteredPSDModel,
+) -> list[dict[str, float | str]]:
+    """Build the common per-method metrics used by reconstruction studies."""
+    minimum_cluster_size = min(clustered_model.train_cluster_sizes.values())
+    fallback_cluster_count = len(clustered_model.fallback_clusters)
+    ari = adjusted_rand_score(true_labels, predicted_labels)
+
+    return [
+        {
+            "method": method,
+            "mae": missing_mae(truth, estimate, observed),
+            "min_train_cluster_size": (
+                minimum_cluster_size if method == "proposed" else np.nan
+            ),
+            "fallback_cluster_count": (
+                fallback_cluster_count if method == "proposed" else np.nan
+            ),
+            "ari": ari if method == "proposed" else np.nan,
+        }
+        for method, estimate in estimates.items()
+    ]
 
 
 def missing_rmse(
