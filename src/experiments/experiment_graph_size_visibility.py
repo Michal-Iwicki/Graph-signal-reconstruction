@@ -4,15 +4,19 @@ import numpy as np
 import pandas as pd
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from experiments._helper import (
+from src.experiments._helper import (
     MixtureSplit,
     REFERENCE_PSD_PROBABILITIES,
     REFERENCE_PSD_PROFILES,
     apply_observation_mask,
     draw_nested_mask_uniforms,
+    config_dict,
     evaluate_reconstruction_methods,
+    experiment_config,
     generate_mixture_split,
     reconstruction_metric_rows,
+    save_aggregated_results,
+    tracked_range,
 )
 
 
@@ -20,17 +24,16 @@ from experiments._helper import (
 # 1. PARAMETRY WSPÓLNE
 # ============================================================
 
-N_TRAIN = 600
-N_TEST = 200
-K_NEIGHBORS = 10          # stałe k => podobny stosunek liczby krawędzi do wierzchołków
-N_COMPONENTS = 5
-
-ALPHA = 10.0
-PSD_BETA = 1.0
-SMOOTH_BETA = 0.1
-
-N_RUNS = 10
-SEED = 42
+EXPERIMENT_CONFIG = experiment_config()
+N_TRAIN = EXPERIMENT_CONFIG.n_train
+N_TEST = EXPERIMENT_CONFIG.n_test
+K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
+N_COMPONENTS = EXPERIMENT_CONFIG.n_components
+ALPHA = EXPERIMENT_CONFIG.alpha
+PSD_BETA = EXPERIMENT_CONFIG.psd_beta
+SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
+N_RUNS = EXPERIMENT_CONFIG.n_runs
+SEED = EXPERIMENT_CONFIG.seed
 
 # Eksperyment 1: zmieniamy tylko liczbę wierzchołków.
 NODE_VALUES = [50, 100, 200, 400]
@@ -114,7 +117,7 @@ def experiment_number_of_nodes():
     rows = []
 
     for n_nodes in NODE_VALUES:
-        for run in range(N_RUNS):
+        for run in tracked_range(N_RUNS, f"graph size: N={n_nodes}"):
             graph_seed = SEED + 1000 * n_nodes + run
             data_seed = SEED + run
             np.random.seed(graph_seed)
@@ -154,7 +157,7 @@ def experiment_number_of_nodes():
 def experiment_visibility():
     rows = []
 
-    for run in range(N_RUNS):
+    for run in tracked_range(N_RUNS, "observation visibility"):
         graph_seed = SEED + run
         np.random.seed(graph_seed)
 
@@ -228,21 +231,27 @@ def summarize(results, parameter):
 # 6. START
 # ============================================================
 
-if __name__ == "__main__":
+def save_results(results, suite, varied_columns, **config_overrides):
+    """Save one graph-size/visibility study with its constant metadata."""
+    save_aggregated_results(
+        results, suite, varied_columns,
+        config_dict(
+            EXPERIMENT_CONFIG,
+            exclude=varied_columns,
+            **config_overrides,
+        ),
+    )
+
+
+def main():
+    """Run and save both graph-size and observation-visibility studies."""
     node_results = experiment_number_of_nodes()
     visibility_results = experiment_visibility()
+    save_results(
+        pd.concat([node_results, visibility_results], ignore_index=True),
+        "graph_size_visibility", ["experiment", "n_nodes", "p_observed"],
+    )
 
-    node_summary = summarize(node_results, "n_nodes")
-    visibility_summary = summarize(visibility_results, "p_observed")
 
-    print("\nWpływ liczby wierzchołków:")
-    print(node_summary)
-
-    print("\nWpływ prawdopodobieństwa obserwacji:")
-    print(visibility_summary)
-
-    node_results.to_csv("nodes_results.csv", index=False)
-    node_summary.to_csv("nodes_summary.csv", index=False)
-
-    visibility_results.to_csv("visibility_results.csv", index=False)
-    visibility_summary.to_csv("visibility_summary.csv", index=False)
+if __name__ == "__main__":
+    main()

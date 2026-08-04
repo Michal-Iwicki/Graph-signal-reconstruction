@@ -2,13 +2,17 @@ import numpy as np
 import pandas as pd
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from experiments._helper import (
+from src.experiments._helper import (
     edge_skewed_psd,
+    config_dict,
     evaluate_reconstruction_methods,
+    experiment_config,
     flat_band_psd,
     gaussian_psd,
     generate_observed_mixture_split,
     reconstruction_metric_rows,
+    save_aggregated_results,
+    tracked_range,
 )
 
 
@@ -16,22 +20,21 @@ from experiments._helper import (
 # 1. PARAMETRY STAŁE
 # ============================================================
 
-N_NODES = 100
-K_NEIGHBORS = 10
+EXPERIMENT_CONFIG = experiment_config(n_runs=20)
+N_NODES = EXPERIMENT_CONFIG.n_nodes
+K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
+N_TRAIN = EXPERIMENT_CONFIG.n_train
+N_TEST = EXPERIMENT_CONFIG.n_test
+P_OBSERVED = EXPERIMENT_CONFIG.p_observed
+N_RUNS = EXPERIMENT_CONFIG.n_runs
+SEED = EXPERIMENT_CONFIG.seed
+ALPHA = EXPERIMENT_CONFIG.alpha
+PSD_BETA = EXPERIMENT_CONFIG.psd_beta
+SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 
-N_TRAIN = 600
-N_TEST = 200
-N_COMPONENTS = 3
-P_OBSERVED = 0.5
-
-N_RUNS = 20
-SEED = 42
-
-ALPHA = 10.0
-PSD_BETA = 1.0
-SMOOTH_BETA = 0.1
 
 PSD_TYPES = ["flat", "gaussian", "low_band", "high_band"]
+COMPONENT_VALUES = (2, 5, 10, 15)
 
 
 # ============================================================
@@ -78,12 +81,12 @@ def draw_psd(psd_type, rng):
     return make_psd(psd_type, parameters), parameters
 
 
-def draw_mixture(graph, rng):
-    # Dla K <= liczby typów profile mają różne rodziny.
+def draw_mixture(graph, rng, n_components):
+    """Draw the requested number of random PSD source profiles."""
     selected_types = rng.choice(
         PSD_TYPES,
-        size=N_COMPONENTS,
-        replace=N_COMPONENTS > len(PSD_TYPES),
+        size=n_components,
+        replace=n_components > len(PSD_TYPES),
     )
 
     functions = []
@@ -115,20 +118,20 @@ def draw_mixture(graph, rng):
 # 5. JEDEN EKSPERYMENT DLA WYLOSOWANEJ MIESZANINY
 # ============================================================
 
-def run_one(graph, run_id, seed):
+def run_one(graph, n_components, run_id, seed):
     np.random.seed(seed)
     rng = np.random.default_rng(seed)
 
     generator = SignalGenerator(graph)
 
-    psd_functions, profile_info = draw_mixture(graph, rng)
+    psd_functions, profile_info = draw_mixture(graph, rng, n_components)
 
     split, train_observed, test_observed = generate_observed_mixture_split(
         generator,
         N_TRAIN,
         N_TEST,
         psd_functions,
-        np.full(N_COMPONENTS, 1 / N_COMPONENTS),
+        np.full(n_components, 1 / n_components),
         P_OBSERVED,
         rng,
     )
@@ -137,7 +140,7 @@ def run_one(graph, run_id, seed):
             graph,
             train_observed,
             test_observed,
-            N_COMPONENTS,
+            n_components,
             alpha=ALPHA,
             beta=PSD_BETA,
             smooth_beta=SMOOTH_BETA,
@@ -148,6 +151,7 @@ def run_one(graph, run_id, seed):
     results = pd.DataFrame([
         {
             "run": run_id,
+            "n_components": n_components,
             "n_train": N_TRAIN,
             "n_test": N_TEST,
             **row,
@@ -164,6 +168,7 @@ def run_one(graph, run_id, seed):
 
     profiles = pd.DataFrame(profile_info)
     profiles.insert(0, "run", run_id)
+    profiles.insert(0, "n_components", n_components)
 
     return results, profiles
 
@@ -180,14 +185,19 @@ def run_many():
     results = []
     profiles = []
 
-    for run_id in range(N_RUNS):
-        run_results, run_profiles = run_one(
-            graph,
-            run_id,
-            SEED + run_id,
-        )
-        results.append(run_results)
-        profiles.append(run_profiles)
+    for n_components in COMPONENT_VALUES:
+        for run_id in tracked_range(
+            N_RUNS,
+            f"multiple PSD: K={n_components}",
+        ):
+            run_results, run_profiles = run_one(
+                graph,
+                n_components,
+                run_id,
+                SEED + run_id,
+            )
+            results.append(run_results)
+            profiles.append(run_profiles)
 
     return (
         pd.concat(results, ignore_index=True),
@@ -199,24 +209,23 @@ def run_many():
 # 7. START
 # ============================================================
 
-if __name__ == "__main__":
-    results, profiles = run_many()
-
-    summary = (
-        results.groupby("method")
-        .agg(
-            mae_mean=("mae", "mean"),
-            mae_std=("mae", "std"),
-            mae_median=("mae", "median"),
-            ari_mean=("ari", "mean"),
-            ari_std=("ari", "std"),
-            fallback_clusters_mean=("fallback_cluster_count", "mean"),
-        )
-        .sort_values("mae_mean")
+def save_results(results):
+    """Save aggregate metrics and the random-PSD experiment parameters."""
+    save_aggregated_results(
+        results, "multiple_psd", ["n_components"],
+        config_dict(
+            EXPERIMENT_CONFIG,
+            exclude=("n_components",),
+            psd_types=PSD_TYPES,
+        ),
     )
 
-    print(summary)
 
-    results.to_csv("many_psd_results.csv", index=False)
-    profiles.to_csv("many_psd_profiles.csv", index=False)
-    summary.to_csv("many_psd_summary.csv")
+def main():
+    """Run and save the random multiple-PSD experiment."""
+    results, _ = run_many()
+    save_results(results)
+
+
+if __name__ == "__main__":
+    main()

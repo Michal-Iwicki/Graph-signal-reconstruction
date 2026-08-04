@@ -5,12 +5,16 @@ import numpy as np
 import pandas as pd
 
 from src.methods.generation import GraphFactory, SignalGenerator
-from experiments._helper import (
+from src.experiments._helper import (
     REFERENCE_PSD_PROBABILITIES,
     REFERENCE_PSD_PROFILES,
+    config_dict,
     evaluate_reconstruction_methods,
+    experiment_config,
     generate_observed_mixture_split,
     reconstruction_metric_rows,
+    save_aggregated_results,
+    tracked_range,
 )
 
 
@@ -18,7 +22,8 @@ from experiments._helper import (
 # 1. PARAMETRY STAŁE
 # ============================================================
 
-N_NODES = 100
+EXPERIMENT_CONFIG = experiment_config()
+N_NODES = EXPERIMENT_CONFIG.n_nodes
 TARGET_EDGES = 180
 
 # Parametry wynikają ze standardowych wzorów na liczbę krawędzi.
@@ -27,21 +32,21 @@ BARABASI_ALBERT_M = round(
     (N_NODES - np.sqrt(N_NODES**2 - 4 * TARGET_EDGES)) / 2
 )
 WATTS_STROGATZ_K = 2 * round(TARGET_EDGES / N_NODES)
+WATTS_STROGATZ_REWIRING = 0.1
 # Po symetryzacji k-NN ma od N*k/2 do N*k krawędzi. Z wynikającego
 # przedziału dla k wybieramy największą liczbę całkowitą.
 KNN_NEIGHBORS = int(2 * TARGET_EDGES // N_NODES)
 
-N_TRAIN = 600
-N_TEST = 200
-P_OBSERVED = 0.5
-N_COMPONENTS = 5
+N_TRAIN = EXPERIMENT_CONFIG.n_train
+N_TEST = EXPERIMENT_CONFIG.n_test
+P_OBSERVED = EXPERIMENT_CONFIG.p_observed
+N_COMPONENTS = EXPERIMENT_CONFIG.n_components
+N_RUNS = EXPERIMENT_CONFIG.n_runs
+SEED = EXPERIMENT_CONFIG.seed
+ALPHA = EXPERIMENT_CONFIG.alpha
+PSD_BETA = EXPERIMENT_CONFIG.psd_beta
+SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 
-N_RUNS = 10
-SEED = 42
-
-ALPHA = 10.0
-PSD_BETA = 1.0
-SMOOTH_BETA = 0.1
 
 TOPOLOGIES = [
     "knn",
@@ -107,7 +112,7 @@ def create_graph(topology, seed):
         graph = GraphFactory.generate_watts_strogatz_graph(
             N=N_NODES,
             k=WATTS_STROGATZ_K,
-            rewiring_probability=0.1,
+            rewiring_probability=WATTS_STROGATZ_REWIRING,
             seed=seed,
         )
 
@@ -172,7 +177,7 @@ def experiment_topology():
     rows = []
 
     for topology_id, topology in enumerate(TOPOLOGIES):
-        for run in range(N_RUNS):
+        for run in tracked_range(N_RUNS, f"topology: {topology}"):
             graph_seed = SEED + 10_000 * topology_id + run
             data_seed = SEED + run
             graph = create_graph(topology, graph_seed)
@@ -239,19 +244,26 @@ def summarize(results):
 # 7. START
 # ============================================================
 
-if __name__ == "__main__":
-    results = experiment_topology()
-    summary = summarize(results)
-
-    print("\nKontrola liczby wierzchołków i krawędzi:")
-    print(
-        results[["topology", "n_nodes", "n_edges"]]
-        .drop_duplicates()
-        .sort_values("topology")
+def save_results(results):
+    """Save topology summaries and topology-independent parameters."""
+    save_aggregated_results(
+        results, "topologies", ["topology"],
+        config_dict(
+            EXPERIMENT_CONFIG,
+            target_edges=TARGET_EDGES,
+            erdos_renyi_probability=ERDOS_RENYI_PROBABILITY,
+            barabasi_albert_m=BARABASI_ALBERT_M,
+            watts_strogatz_neighbors=WATTS_STROGATZ_K,
+            watts_strogatz_rewiring=WATTS_STROGATZ_REWIRING,
+            knn_neighbors=KNN_NEIGHBORS,
+        ),
     )
 
-    print("\nWyniki:")
-    print(summary)
 
-    results.to_csv("topology_results.csv", index=False)
-    summary.to_csv("topology_summary.csv", index=False)
+def main():
+    """Run and save the graph-topology experiment."""
+    save_results(experiment_topology())
+
+
+if __name__ == "__main__":
+    main()

@@ -319,10 +319,22 @@ class MixedSignalReconstruction:
             )
             labels = np.argmax(responsibilities, axis=1)
             gamma_matrix = self._normalize_rows(gmm.var)
+            psds = {
+                cluster: gamma_matrix[cluster]
+                for cluster in range(int(K))
+            }
             self.last_labels = labels
             self.best_K_ = int(K)
+            self.best_score_ = self._calculate_yang_cost(
+                matrix,
+                reconstructed,
+                psds,
+                labels,
+                options.get("alpha", 10.0),
+                options.get("beta", 1.0),
+            )
             self._cache_splines(
-                {cluster: gamma_matrix[cluster] for cluster in range(int(K))},
+                psds,
                 smoothing_factor,
             )
             return reconstructed

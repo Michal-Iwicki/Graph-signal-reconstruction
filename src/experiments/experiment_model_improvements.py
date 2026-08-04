@@ -8,12 +8,17 @@ from src.methods.generation import GraphFactory, SignalGenerator
 from src.methods.models import MixedSignalReconstruction
 from src.methods.clustering import ClusteringEvaluator
 from src.methods.reconstruction import SignalReconstructor
-from experiments._helper import (
+from src.experiments._helper import (
     REFERENCE_PSD_PROBABILITIES,
     REFERENCE_PSD_PROFILES,
+    config_dict,
+    experiment_config,
     generate_observed_mixture_split,
     missing_mae,
     missing_rmse,
+    clustering_accuracy,
+    save_aggregated_results,
+    tracked_range,
 )
 
 
@@ -21,19 +26,18 @@ from experiments._helper import (
 # 1. PARAMETRY STAŁE
 # ============================================================
 
-N_NODES = 100
-K_NEIGHBORS = 10
-N_TRAIN = 600
-N_TEST = 200
-P_OBSERVED = 0.5
-N_COMPONENTS = 5
-
-N_RUNS = 20
-SEED = 42
-
-ALPHA = 10.0
-PSD_BETA = 1.0
-INIT_BETA = 0.1
+EXPERIMENT_CONFIG = experiment_config(n_runs=20)
+N_NODES = EXPERIMENT_CONFIG.n_nodes
+K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
+N_TRAIN = EXPERIMENT_CONFIG.n_train
+N_TEST = EXPERIMENT_CONFIG.n_test
+P_OBSERVED = EXPERIMENT_CONFIG.p_observed
+N_COMPONENTS = EXPERIMENT_CONFIG.n_components
+N_RUNS = EXPERIMENT_CONFIG.n_runs
+SEED = EXPERIMENT_CONFIG.seed
+ALPHA = EXPERIMENT_CONFIG.alpha
+PSD_BETA = EXPERIMENT_CONFIG.psd_beta
+INIT_BETA = EXPERIMENT_CONFIG.smooth_beta
 
 MAX_ITER = 10
 TOL = 1e-4
@@ -44,24 +48,7 @@ TOL = 1e-4
 # ============================================================
 
 METHODS = {
-    # # Klasyczna rekonstrukcja oparta wyłącznie na gładkości grafowej.
-    # "smoothness": {
-    #     "method": "smooth",
-    #     "kwargs": {
-    #         "beta": INIT_BETA,
-    #     },
-    # },
 
-    # # Jedno PSD estymowane na całym zbiorze treningowym.
-    # "global_psd": {
-    #     "method": "global_psd",
-    #     "kwargs": {
-    #         "alpha": ALPHA,
-    #         "beta": PSD_BETA,
-    #     },
-    # },
-
-    # Metoda bazowa: smoothing -> clustering -> PSD reconstruction.
     "clustered": {
         "method": "clustered_reconstruction",
         "kwargs": {
@@ -216,6 +203,11 @@ def run_one(graph, run, seed):
             if predicted_labels is not None
             else np.nan
         )
+        accuracy = (
+            clustering_accuracy(split.test_labels, predicted_labels)
+            if predicted_labels is not None
+            else np.nan
+        )
 
         rows.append({
             "run": run,
@@ -225,6 +217,7 @@ def run_one(graph, run, seed):
             "mae": missing_mae(split.test, estimate, test_observed),
             "rmse": missing_rmse(split.test, estimate, test_observed),
             "ari": ari,
+            "clustering_accuracy": accuracy,
             "min_train_cluster_size": (
                 int(
                     min(
@@ -251,7 +244,7 @@ def run_one(graph, run, seed):
 def experiment_model_improvements():
     rows = []
 
-    for run in range(N_RUNS):
+    for run in tracked_range(N_RUNS, "model improvements"):
         seed = SEED + run
 
         # Nowy graf i dane w każdym runie, wspólne dla wszystkich metod.
@@ -292,12 +285,24 @@ def summarize(results):
 # 7. START
 # ============================================================
 
+def save_results(results):
+    """Save model comparison summaries and method-specific settings."""
+    save_aggregated_results(
+        results, "model_improvements", [],
+        config_dict(
+            EXPERIMENT_CONFIG,
+            init_beta=INIT_BETA,
+            max_iter=MAX_ITER,
+            tol=TOL,
+            methods=METHODS,
+        ),
+    )
+
+
+def main():
+    """Run and save the model-improvements experiment."""
+    save_results(experiment_model_improvements())
+
+
 if __name__ == "__main__":
-    results = experiment_model_improvements()
-    summary = summarize(results)
-
-    print("\nPorównanie metod:")
-    print(summary)
-
-    results.to_csv("model_improvements_results.csv", index=False)
-    summary.to_csv("model_improvements_summary.csv", index=False)
+    main()

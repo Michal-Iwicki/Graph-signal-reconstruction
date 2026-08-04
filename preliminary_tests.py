@@ -11,12 +11,13 @@ import seaborn as sns
 from src.methods.clustering import ClusteringEvaluator, GMM_Diag
 from src.methods.generation import GraphFactory, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
-from experiments._helper import (
+from src.experiments._helper import (
     apply_observation_mask,
     draw_nested_mask_uniforms,
     estimate_group_psds,
     generate_mixture_split,
     reconstruct_from_group_psds,
+    tracked_range,
 )
 
 
@@ -201,10 +202,6 @@ def reconstruction_experiment(
     missing_mask = ~observed_mask
     mae_psd = _mae_on_missing(truth, psd_estimate, missing_mask)
     mae_smooth = _mae_on_missing(truth, smooth_estimate, missing_mask)
-
-    print(f"\n=== Reconstruction results (p={p}) ===")
-    print(f"MAE PSD: {mae_psd:.4f}")
-    print(f"MAE GM : {mae_smooth:.4f}")
 
     positions = nx.spring_layout(graph, seed=seed)
     order = np.argsort(truth)
@@ -617,8 +614,6 @@ def run_mixed_comparison_experiment(
     figure_box.tight_layout()
     plt.show()
 
-    print("\n=== Aggregate results (mean MAE) ===")
-    print(results.groupby("Type")[["Informed MAE", "Global MAE"]].mean())
     return results
 
 
@@ -661,7 +656,7 @@ def gmm_mixed_signal_experiment(
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
 
-    for run in range(n_runs):
+    for run in tracked_range(n_runs, "preliminary GMM"):
         run_seed = seed + run
         random_generator = np.random.default_rng(run_seed)
         split = generate_mixture_split(
@@ -714,13 +709,6 @@ def gmm_mixed_signal_experiment(
                 )
                 gmm.fit(train_features)
                 updated_prediction = gmm.predict(train_features)
-                agreement = ClusteringEvaluator.evaluate_accuracy(
-                    train_prediction,
-                    updated_prediction,
-                    cluster_count,
-                )
-                if verbose:
-                    print(f"Run {run + 1}: refinement agreement={agreement:.4f}")
                 if np.array_equal(updated_prediction, train_prediction):
                     train_prediction = updated_prediction
                     break

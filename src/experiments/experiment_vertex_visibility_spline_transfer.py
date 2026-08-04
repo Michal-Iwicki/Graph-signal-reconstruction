@@ -24,13 +24,17 @@ from scipy.interpolate import UnivariateSpline
 
 from src.methods.generation import GSPGraph, GraphFactory, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
-from experiments._helper import (
+from src.experiments._helper import (
     REFERENCE_PSD_PROBABILITIES,
     REFERENCE_PSD_PROFILES,
     apply_observation_mask,
+    config_dict,
     draw_nested_mask_uniforms,
+    experiment_config,
     missing_mae,
     missing_rmse,
+    save_aggregated_results,
+    tracked_range,
 )
 
 
@@ -38,24 +42,23 @@ from experiments._helper import (
 # 1. PARAMETRY WSPÓLNE
 # ============================================================
 
-N_NODES = 100
-K_NEIGHBORS = 10
-N_TRAIN = 600
-N_TEST = 200
+EXPERIMENT_CONFIG = experiment_config(n_nodes=1000)
+N_NODES = EXPERIMENT_CONFIG.n_nodes
+K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
+N_TRAIN = EXPERIMENT_CONFIG.n_train
+N_TEST = EXPERIMENT_CONFIG.n_test
 
 # W treningu widoczny jest tylko taki procent wierzchołków pełnego grafu.
 TRAIN_VERTEX_VISIBILITY = (0.2, 0.4, 0.6, 0.8, 1.0)
 
 # Test jest wykonywany na pełnym grafie, ale część wartości sygnału pozostaje
 # ukryta i podlega rekonstrukcji.
-TEST_OBSERVATION_PROBABILITY = 0.5
-
-N_RUNS = 10
-SEED = 42
-
-ALPHA = 10.0
-PSD_BETA = 1.0
-SMOOTH_BETA = 0.1
+TEST_OBSERVATION_PROBABILITY = EXPERIMENT_CONFIG.p_observed
+N_RUNS = EXPERIMENT_CONFIG.n_runs
+SEED = EXPERIMENT_CONFIG.seed
+ALPHA = EXPERIMENT_CONFIG.alpha
+PSD_BETA = EXPERIMENT_CONFIG.psd_beta
+SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 SPLINE_SMOOTHING = None
 
 # Jeden profil używany w wariancie single-PSD.
@@ -189,7 +192,7 @@ def experiment_single_psd() -> pd.DataFrame:
     """Learn one PSD on partial graphs and reconstruct on the full graph."""
     rows = []
 
-    for run in range(N_RUNS):
+    for run in tracked_range(N_RUNS, "spline transfer: single PSD"):
         graph_seed = SEED + run
         np.random.seed(graph_seed)
         full_graph = GraphFactory.generate_nn_graph(N_NODES, K_NEIGHBORS)
@@ -334,7 +337,7 @@ def experiment_mixed_signals() -> pd.DataFrame:
     rows = []
     n_components = len(REFERENCE_PSD_PROFILES)
 
-    for run in range(N_RUNS):
+    for run in tracked_range(N_RUNS, "spline transfer: mixed PSD"):
         graph_seed = SEED + run
         np.random.seed(graph_seed)
         full_graph = GraphFactory.generate_nn_graph(N_NODES, K_NEIGHBORS)
@@ -445,8 +448,25 @@ def run_all() -> tuple[pd.DataFrame, pd.DataFrame]:
     return results, summarize(results)
 
 
+def save_results(results):
+    """Save spline-transfer summaries and parameters fixed across visibility."""
+    save_aggregated_results(
+        results, "spline_transfer",
+        ["experiment", "train_vertex_visibility"],
+        config_dict(
+            EXPERIMENT_CONFIG,
+            exclude=("p_observed",),
+            test_observation_probability=TEST_OBSERVATION_PROBABILITY,
+            spline_smoothing=SPLINE_SMOOTHING,
+        ),
+    )
+
+
+def main():
+    """Run and save both spline-transfer studies."""
+    raw_results, _ = run_all()
+    save_results(raw_results)
+
+
 if __name__ == "__main__":
-    raw_results, summary = run_all()
-    raw_results.to_csv("vertex_visibility_spline_transfer_raw.csv", index=False)
-    summary.to_csv("vertex_visibility_spline_transfer_summary.csv", index=False)
-    print(summary.to_string(index=False))
+    main()

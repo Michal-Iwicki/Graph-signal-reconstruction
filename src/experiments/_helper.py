@@ -5,15 +5,216 @@ masking, model fitting, and test-set reconstruction. This makes it possible to
 reuse latent signals and nested masks without leaking test data into training.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
+import json
 from collections.abc import Callable, Sequence
+from pathlib import Path
+from time import perf_counter
 
 import numpy as np
+import pandas as pd
 from sklearn.metrics import adjusted_rand_score
+from sklearn.metrics.cluster import contingency_matrix
+from scipy.optimize import linear_sum_assignment
 
 from src.methods.clustering import ClusteringEvaluator, GMM_Diag
 from src.methods.generation import GSPGraph, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
+
+
+# Resolving output paths from this file makes them independent of the directory
+# used to launch an experiment.
+RESULTS_DIR = Path(__file__).resolve().parents[2] / "results"
+RECONSTRUCTION_RESULTS_DIR = RESULTS_DIR / "reconstruction"
+CLUSTERING_RESULTS_DIR = RESULTS_DIR / "clustering"
+CONFIG_RESULTS_DIR = RESULTS_DIR / "configs"
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    """Parameters shared by the maintained graph experiments."""
+
+    n_nodes: int = 100
+    k_neighbors: int = 10
+    n_train: int = 600
+    n_test: int = 200
+    p_observed: float = 0.5
+    n_components: int = 5
+    n_runs: int = 10
+    seed: int = 42
+    alpha: float = 10.0
+    psd_beta: float = 0.75
+    smooth_beta: float = 0.75
+
+
+DEFAULT_EXPERIMENT_CONFIG = ExperimentConfig()
+
+
+def experiment_config(**overrides) -> ExperimentConfig:
+    """Create a shared experiment configuration with explicit overrides."""
+    return replace(DEFAULT_EXPERIMENT_CONFIG, **overrides)
+
+
+def config_dict(
+    config: ExperimentConfig,
+    *,
+    exclude: Sequence[str] = (),
+    **extra,
+) -> dict:
+    """Build JSON metadata from shared configuration and suite additions."""
+    values = asdict(config)
+    for name in exclude:
+        values.pop(name, None)
+    return {**values, **extra}
+
+
+def save_csv(
+    frame: pd.DataFrame,
+    filename: str,
+    directory: Path,
+    *,
+    index: bool = False,
+) -> Path:
+    """Save an experiment frame in its metric-specific results directory."""
+    if Path(filename).name != filename:
+        raise ValueError("filename must not contain directory components.")
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / filename
+    frame.to_csv(destination, index=index, float_format="%.4f")
+    return destination
+
+
+def clustering_accuracy(true_labels: np.ndarray, predicted_labels: np.ndarray) -> float:
+    """Return clustering accuracy after the optimal permutation of labels."""
+    table = contingency_matrix(true_labels, predicted_labels)
+    rows, columns = linear_sum_assignment(-table)
+    return float(table[rows, columns].sum() / table.sum())
+
+
+def _json_value(value):
+    """Convert numpy, dataclass, and callable values to JSON-safe objects."""
+    if is_dataclass(value):
+        return _json_value(asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if callable(value):
+        return getattr(value, "__name__", repr(value))
+    return value
+
+
+def save_experiment_config(config: dict, suite: str) -> Path:
+    """Store parameters that are constant throughout a suite in JSON."""
+    CONFIG_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    destination = CONFIG_RESULTS_DIR / f"{suite}.json"
+    destination.write_text(
+        json.dumps(_json_value(config), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
+def aggregate_experiment_results(
+    results: pd.DataFrame,
+    varied_columns: Sequence[str],
+    *,
+    tidy: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reduce repeated runs to the public reconstruction/clustering schema."""
+    missing = set(varied_columns) - set(results.columns)
+    if missing:
+        raise ValueError(f"Missing varied columns: {sorted(missing)!r}.")
+    groups = [*varied_columns, "method"]
+
+    if tidy:
+        required = {"metric", "value", "method"}
+        if missing_required := required - set(results.columns):
+            raise ValueError(f"Missing tidy columns: {sorted(missing_required)!r}.")
+        selected = results.loc[results["metric"].isin({"mae", "ari", "acc"})]
+        summary = (
+            selected.groupby([*groups, "metric"], dropna=False)["value"]
+            .agg(mean="mean", std="std")
+            .reset_index()
+        )
+        reconstruction = summary.loc[summary["metric"] == "mae", groups].copy()
+        mae = summary.loc[summary["metric"] == "mae", [*groups, "mean", "std"]]
+        reconstruction = mae.rename(columns={"mean": "mae", "std": "std_mae"})
+        clustering = (
+            summary.loc[summary["metric"].isin({"ari", "acc"}), [*groups, "metric", "mean"]]
+            .pivot(index=groups, columns="metric", values="mean")
+            .reset_index()
+            .rename(columns={"acc": "clustering_accuracy"})
+        )
+        clustering.columns.name = None
+        clustering = clustering[[*groups, "ari", "clustering_accuracy"]]
+        return reconstruction, clustering
+
+    reconstruction = (
+        results.groupby(groups, dropna=False)["mae"]
+        .agg(mae="mean", std_mae="std")
+        .reset_index()
+    )
+    if "ari" not in results:
+        return reconstruction, pd.DataFrame()
+    cluster_rows = results.loc[results["ari"].notna()]
+    if cluster_rows.empty:
+        return reconstruction, pd.DataFrame()
+    if "clustering_accuracy" not in cluster_rows:
+        raise ValueError(
+            "Clustering results must contain 'clustering_accuracy'."
+        )
+    metrics = {
+        "ari": ("ari", "mean"),
+        "clustering_accuracy": ("clustering_accuracy", "mean"),
+    }
+    clustering = cluster_rows.groupby(groups, dropna=False).agg(**metrics).reset_index()
+    return reconstruction, clustering
+
+
+def save_aggregated_results(
+    results: pd.DataFrame,
+    suite: str,
+    varied_columns: Sequence[str],
+    config: dict,
+    *,
+    tidy: bool = False,
+) -> tuple[Path, Path | None, Path]:
+    """Save compact aggregate CSV files and the constant configuration JSON."""
+    reconstruction, clustering = aggregate_experiment_results(
+        results, varied_columns, tidy=tidy
+    )
+    reconstruction_path = save_csv(
+        reconstruction,
+        f"{suite}_reconstruction_results.csv",
+        RECONSTRUCTION_RESULTS_DIR,
+    )
+    clustering_path = None
+    if not clustering.empty:
+        clustering_path = save_csv(
+            clustering,
+            f"{suite}_clustering_results.csv",
+            CLUSTERING_RESULTS_DIR,
+        )
+    config_path = save_experiment_config(config, suite)
+    for path in (reconstruction_path, clustering_path, config_path):
+        if path is not None:
+            print(f"Saved {path}", flush=True)
+    return reconstruction_path, clustering_path, config_path
+
+
+def tracked_range(total: int, label: str):
+    """Yield run numbers and report cumulative progress to the console."""
+    started_at = perf_counter()
+    print(f"[{label}] 0/{total}", flush=True)
+    for index in range(total):
+        yield index
+        elapsed = perf_counter() - started_at
+        print(f"[{label}] {index + 1}/{total} ({elapsed:.1f} s)", flush=True)
 
 
 @dataclass(frozen=True)
@@ -408,6 +609,7 @@ def reconstruction_metric_rows(
     minimum_cluster_size = min(clustered_model.train_cluster_sizes.values())
     fallback_cluster_count = len(clustered_model.fallback_clusters)
     ari = adjusted_rand_score(true_labels, predicted_labels)
+    accuracy = clustering_accuracy(true_labels, predicted_labels)
 
     return [
         {
@@ -420,6 +622,9 @@ def reconstruction_metric_rows(
                 fallback_cluster_count if method == "proposed" else np.nan
             ),
             "ari": ari if method == "proposed" else np.nan,
+            "clustering_accuracy": (
+                accuracy if method == "proposed" else np.nan
+            ),
         }
         for method, estimate in estimates.items()
     ]
