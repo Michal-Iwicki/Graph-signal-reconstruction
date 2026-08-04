@@ -1,3 +1,5 @@
+"""Evaluate reconstruction across random mixtures of multiple PSD profiles."""
+
 import numpy as np
 import pandas as pd
 
@@ -17,7 +19,7 @@ from src.experiments._helper import (
 
 
 # ============================================================
-# 1. PARAMETRY STAŁE
+# 1. FIXED PARAMETERS
 # ============================================================
 
 EXPERIMENT_CONFIG = experiment_config(n_runs=20)
@@ -38,10 +40,11 @@ COMPONENT_VALUES = (2, 5, 10, 15)
 
 
 # ============================================================
-# 2. FUNKCJA BUDUJĄCA PSD
+# 2. PSD CONSTRUCTION
 # ============================================================
 
 def make_psd(psd_type, parameters):
+    """Build a PSD profile of the requested type from its parameters."""
     if psd_type == "flat":
         return flat_band_psd(parameters["low"], parameters["high"])
     if psd_type == "gaussian":
@@ -50,14 +53,15 @@ def make_psd(psd_type, parameters):
         return edge_skewed_psd(parameters["scale"], side="low")
     if psd_type == "high_band":
         return edge_skewed_psd(parameters["scale"], side="high")
-    raise ValueError(f"Nieznany typ PSD: {psd_type}")
+    raise ValueError(f"Unknown PSD type: {psd_type}")
 
 
 # ============================================================
-# 3. LOSOWANIE PARAMETRÓW
+# 3. PARAMETER SAMPLING
 # ============================================================
 
 def draw_psd(psd_type, rng):
+    """Draw parameters and return a random PSD profile of the given type."""
     if psd_type == "flat":
         low = rng.uniform(0.0, 0.7)
         high = rng.uniform(low + 0.1, min(low + 0.35, 1.0))
@@ -76,7 +80,7 @@ def draw_psd(psd_type, rng):
         parameters = {"scale": rng.uniform(0.08, 0.22)}
 
     else:
-        raise ValueError(f"Nieznany typ PSD: {psd_type}")
+        raise ValueError(f"Unknown PSD type: {psd_type}")
 
     return make_psd(psd_type, parameters), parameters
 
@@ -93,7 +97,7 @@ def draw_mixture(graph, rng, n_components):
     descriptions = []
 
     for component, psd_type in enumerate(selected_types):
-        # Czasem płaski przedział może nie zawierać żadnej wartości własnej.
+        # A random flat band may contain no graph eigenvalue.
         for _ in range(100):
             function, parameters = draw_psd(psd_type, rng)
             gamma = function(graph.eigenvalues, graph.eigenvalues[-1])
@@ -109,16 +113,12 @@ def draw_mixture(graph, rng, n_components):
 
     return functions, descriptions
 
-
 # ============================================================
-# 4. METRYKA
-# ============================================================
-
-# ============================================================
-# 5. JEDEN EKSPERYMENT DLA WYLOSOWANEJ MIESZANINY
+# 4. SINGLE RANDOM-MIXTURE EXPERIMENT
 # ============================================================
 
 def run_one(graph, n_components, run_id, seed):
+    """Run all reconstruction methods for one random PSD mixture."""
     np.random.seed(seed)
     rng = np.random.default_rng(seed)
 
@@ -174,11 +174,12 @@ def run_one(graph, n_components, run_id, seed):
 
 
 # ============================================================
-# 6. WIELE LOSOWAŃ KSZTAŁTÓW I PARAMETRÓW
+# 5. REPEATED PROFILE AND PARAMETER DRAWS
 # ============================================================
 
 def run_many():
-    # Graf jest stały. W kolejnych runach zmieniają się PSD, sygnały i maski.
+    """Repeat the experiment while keeping the graph fixed."""
+    # PSDs, signals, and masks change between runs.
     np.random.seed(SEED)
     graph = GraphFactory.generate_nn_graph(N_NODES, K_NEIGHBORS)
 
@@ -206,7 +207,7 @@ def run_many():
 
 
 # ============================================================
-# 7. START
+# 6. ENTRYPOINT
 # ============================================================
 
 def save_results(results):

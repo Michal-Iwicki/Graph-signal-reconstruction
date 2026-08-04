@@ -1,4 +1,4 @@
-"""Testowanie jednego parametru naraz dla stałej mieszaniny 5 PSD."""
+"""Vary graph size and observation probability for a fixed five-PSD mixture."""
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,7 @@ from src.experiments._helper import (
 
 
 # ============================================================
-# 1. PARAMETRY WSPÓLNE
+# 1. SHARED PARAMETERS
 # ============================================================
 
 EXPERIMENT_CONFIG = experiment_config()
@@ -35,17 +35,17 @@ SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 N_RUNS = EXPERIMENT_CONFIG.n_runs
 SEED = EXPERIMENT_CONFIG.seed
 
-# Eksperyment 1: zmieniamy tylko liczbę wierzchołków.
+# Experiment 1 varies only the number of vertices.
 NODE_VALUES = [50, 100, 200, 400]
 FIXED_VISIBILITY = 0.5
 
-# Eksperyment 2: zmieniamy tylko prawdopodobieństwo obserwacji.
+# Experiment 2 varies only the observation probability.
 FIXED_NODES = 100
 VISIBILITY_VALUES = [0.1, 0.2, 0.5, 0.8]
 
 
 # ============================================================
-# 2. METRYKI I PORÓWNANIE METOD
+# 2. METHOD COMPARISON
 # ============================================================
 
 def compare_methods(
@@ -57,10 +57,10 @@ def compare_methods(
     train_uniforms=None,
     test_uniforms=None,
 ):
-    """Uczy modele na treningu i raportuje błąd wyłącznie na teście.
+    """Fit on training data and report reconstruction error on test data.
 
-    Opcjonalne ``split`` i macierze uniformów pozwalają wszystkim wartościom
-    widoczności używać tych samych sygnałów oraz zagnieżdżonych masek.
+    Optional ``split`` and uniform matrices let all visibility levels reuse
+    the same latent signals and nested observation masks.
     """
     np.random.seed(seed)
     rng = np.random.default_rng(seed)
@@ -110,10 +110,11 @@ def compare_methods(
 
 
 # ============================================================
-# 3. EKSPERYMENT: LICZBA WIERZCHOŁKÓW
+# 3. GRAPH-SIZE EXPERIMENT
 # ============================================================
 
 def experiment_number_of_nodes():
+    """Evaluate reconstruction while varying the number of graph vertices."""
     rows = []
 
     for n_nodes in NODE_VALUES:
@@ -122,7 +123,7 @@ def experiment_number_of_nodes():
             data_seed = SEED + run
             np.random.seed(graph_seed)
 
-            # k pozostaje stałe, więc średni stopień i E/N są zbliżone.
+            # Keeping k fixed keeps the mean degree and E/N approximately fixed.
             graph = GraphFactory.generate_nn_graph(
                 N=n_nodes,
                 k=K_NEIGHBORS,
@@ -151,17 +152,18 @@ def experiment_number_of_nodes():
 
 
 # ============================================================
-# 4. EKSPERYMENT: PRAWDOPODOBIEŃSTWO OBSERWACJI
+# 4. OBSERVATION-PROBABILITY EXPERIMENT
 # ============================================================
 
 def experiment_visibility():
+    """Evaluate reconstruction while varying observation probability."""
     rows = []
 
     for run in tracked_range(N_RUNS, "observation visibility"):
         graph_seed = SEED + run
         np.random.seed(graph_seed)
 
-        # Ten sam graf w obrębie jednego runu dla wszystkich wartości p.
+        # Reuse the same graph for every probability within a run.
         graph = GraphFactory.generate_nn_graph(
             N=FIXED_NODES,
             k=K_NEIGHBORS,
@@ -207,28 +209,7 @@ def experiment_visibility():
 
 
 # ============================================================
-# 5. PODSUMOWANIE
-# ============================================================
-
-def summarize(results, parameter):
-    return (
-        results
-        .groupby([parameter, "method"])
-        .agg(
-            mae_mean=("mae", "mean"),
-            mae_std=("mae", "std"),
-            ari_mean=("ari", "mean"),
-            ari_std=("ari", "std"),
-            min_cluster_size_mean=("min_train_cluster_size", "mean"),
-            fallback_clusters_mean=("fallback_cluster_count", "mean"),
-            n_runs=("mae", "count"),
-        )
-        .reset_index()
-    )
-
-
-# ============================================================
-# 6. START
+# 5. ENTRYPOINT
 # ============================================================
 
 def save_results(results, suite, varied_columns, **config_overrides):

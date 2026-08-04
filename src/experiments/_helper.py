@@ -628,16 +628,3 @@ def reconstruction_metric_rows(
         }
         for method, estimate in estimates.items()
     ]
-
-
-def missing_rmse(
-    truth: np.ndarray,
-    estimate: np.ndarray,
-    observed: np.ndarray,
-) -> float:
-    """Return RMSE restricted to entries hidden in the test observations."""
-    missing = np.isnan(observed)
-    if not np.any(missing):
-        return float("nan")
-    errors = truth[missing] - estimate[missing]
-    return float(np.sqrt(np.mean(errors**2)))

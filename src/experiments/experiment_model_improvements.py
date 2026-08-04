@@ -1,4 +1,4 @@
-"""Porównanie ulepszeń z models.py na stałym grafie i stałej mieszaninie PSD."""
+"""Compare model improvements on a fixed graph and PSD mixture."""
 
 import numpy as np
 import pandas as pd
@@ -15,7 +15,6 @@ from src.experiments._helper import (
     experiment_config,
     generate_observed_mixture_split,
     missing_mae,
-    missing_rmse,
     clustering_accuracy,
     save_aggregated_results,
     tracked_range,
@@ -23,7 +22,7 @@ from src.experiments._helper import (
 
 
 # ============================================================
-# 1. PARAMETRY STAŁE
+# 1. FIXED PARAMETERS
 # ============================================================
 
 EXPERIMENT_CONFIG = experiment_config(n_runs=20)
@@ -44,7 +43,7 @@ TOL = 1e-4
 
 
 # ============================================================
-# 2. TESTOWANE METODY
+# 2. METHODS UNDER TEST
 # ============================================================
 
 METHODS = {
@@ -60,7 +59,7 @@ METHODS = {
         },
     },
 
-    # Ulepszenie 1: ponowne klastrowanie po rekonstrukcji.
+    # Improvement 1: repeat clustering after reconstruction.
     "iterative": {
         "method": "iterative_clustered_reconstruction",
         "kwargs": {
@@ -73,7 +72,7 @@ METHODS = {
         },
     },
 
-    # Ulepszenie 2: rekonstrukcja wpleciona w aktualizacje EM.
+    # Improvement 2: incorporate reconstruction into the EM updates.
     "simultaneous": {
         "method": "simultaneous_method",
         "kwargs": {
@@ -89,14 +88,14 @@ METHODS = {
 
 
 # ============================================================
-# 3. KLASYFIKACJA NOWYCH SYGNAŁÓW
+# 3. NEW-SIGNAL CLASSIFICATION
 # ============================================================
 
 def predict_from_training_partition(train_features, labels, test_features):
-    """Klasyfikuje test bez używania jego prawdziwych etykiet.
+    """Classify test signals without using their ground-truth labels.
 
-    Dla każdego klastra wyznaczany jest diagonalny model Gaussa w przestrzeni
-    GFT. Numery klas pozostają zgodne z PSD zapisanymi przez trenowany model.
+    A diagonal Gaussian is fitted in GFT space for each training cluster.
+    Cluster identifiers remain aligned with the PSDs stored by the model.
     """
     assignments = np.asarray(labels)
     clusters = np.unique(assignments)
@@ -120,11 +119,11 @@ def predict_from_training_partition(train_features, labels, test_features):
 
 
 # ============================================================
-# 4. JEDNO POWTÓRZENIE
+# 4. SINGLE RUN
 # ============================================================
 
 def run_one(graph, run, seed):
-    """Trenuje każdy wariant na treningu i ocenia na niezależnym teście."""
+    """Fit each variant on training data and evaluate on independent test data."""
     np.random.seed(seed)
     rng = np.random.default_rng(seed)
 
@@ -161,53 +160,26 @@ def run_one(graph, run, seed):
     for method_name, specification in METHODS.items():
         model = MixedSignalReconstruction(graph)
 
-        kwargs = {
-            **specification["kwargs"],
-        }
-        if method_name not in {"smoothness", "global_psd"}:
-            kwargs["random_state"] = seed
-
-        if method_name == "smoothness":
-            estimate = smooth_test
-            predicted_labels = None
-        else:
-            model.fit_transform(
-                train_observed,
-                method=specification["method"],
-                **kwargs,
-            )
-            if method_name == "global_psd":
-                estimate = model.transfer_reconstruction(
-                    test_observed,
-                    graph,
-                    alpha=ALPHA,
-                    beta=PSD_BETA,
-                )
-                predicted_labels = None
-            else:
-                predicted_labels = predict_from_training_partition(
-                    train_features,
-                    model.last_labels,
-                    test_features,
-                )
-                estimate = model.transfer_reconstruction(
-                    test_observed,
-                    graph,
-                    labels=predicted_labels,
-                    alpha=ALPHA,
-                    beta=PSD_BETA,
-                )
-
-        ari = (
-            adjusted_rand_score(split.test_labels, predicted_labels)
-            if predicted_labels is not None
-            else np.nan
+        kwargs = {**specification["kwargs"], "random_state": seed}
+        model.fit_transform(
+            train_observed,
+            method=specification["method"],
+            **kwargs,
         )
-        accuracy = (
-            clustering_accuracy(split.test_labels, predicted_labels)
-            if predicted_labels is not None
-            else np.nan
+        predicted_labels = predict_from_training_partition(
+            train_features,
+            model.last_labels,
+            test_features,
         )
+        estimate = model.transfer_reconstruction(
+            test_observed,
+            graph,
+            labels=predicted_labels,
+            alpha=ALPHA,
+            beta=PSD_BETA,
+        )
+        ari = adjusted_rand_score(split.test_labels, predicted_labels)
+        accuracy = clustering_accuracy(split.test_labels, predicted_labels)
 
         rows.append({
             "run": run,
@@ -215,7 +187,6 @@ def run_one(graph, run, seed):
             "n_train": N_TRAIN,
             "n_test": N_TEST,
             "mae": missing_mae(split.test, estimate, test_observed),
-            "rmse": missing_rmse(split.test, estimate, test_observed),
             "ari": ari,
             "clustering_accuracy": accuracy,
             "min_train_cluster_size": (
@@ -225,9 +196,7 @@ def run_one(graph, run, seed):
                         for cluster in np.unique(model.last_labels)
                     )
                 )
-                if model.last_labels is not None
-                and method_name != "global_psd"
-                else np.nan
+                if model.last_labels is not None else np.nan
             ),
             "selected_k": model.best_K_,
             "train_cost": model.best_score_,
@@ -238,16 +207,17 @@ def run_one(graph, run, seed):
 
 
 # ============================================================
-# 5. WIELE POWTÓRZEŃ
+# 5. REPEATED RUNS
 # ============================================================
 
 def experiment_model_improvements():
+    """Compare all configured model variants over repeated random runs."""
     rows = []
 
     for run in tracked_range(N_RUNS, "model improvements"):
         seed = SEED + run
 
-        # Nowy graf i dane w każdym runie, wspólne dla wszystkich metod.
+        # Use a new graph and data in each run, shared by all methods.
         np.random.seed(seed)
         graph = GraphFactory.generate_nn_graph(
             N=N_NODES,
@@ -260,29 +230,7 @@ def experiment_model_improvements():
 
 
 # ============================================================
-# 6. PODSUMOWANIE
-# ============================================================
-
-def summarize(results):
-    return (
-        results
-        .groupby("method")
-        .agg(
-            mae_mean=("mae", "mean"),
-            mae_std=("mae", "std"),
-            rmse_mean=("rmse", "mean"),
-            rmse_std=("rmse", "std"),
-            ari_mean=("ari", "mean"),
-            ari_std=("ari", "std"),
-            n_runs=("mae", "count"),
-        )
-        .sort_values("mae_mean")
-        .reset_index()
-    )
-
-
-# ============================================================
-# 7. START
+# 6. ENTRYPOINT
 # ============================================================
 
 def save_results(results):

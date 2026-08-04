@@ -32,14 +32,13 @@ from src.experiments._helper import (
     draw_nested_mask_uniforms,
     experiment_config,
     missing_mae,
-    missing_rmse,
     save_aggregated_results,
     tracked_range,
 )
 
 
 # ============================================================
-# 1. PARAMETRY WSPÓLNE
+# 1. SHARED PARAMETERS
 # ============================================================
 
 EXPERIMENT_CONFIG = experiment_config(n_nodes=1000)
@@ -48,11 +47,11 @@ K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
 N_TRAIN = EXPERIMENT_CONFIG.n_train
 N_TEST = EXPERIMENT_CONFIG.n_test
 
-# W treningu widoczny jest tylko taki procent wierzchołków pełnego grafu.
+# Fraction of full-graph vertices available during training.
 TRAIN_VERTEX_VISIBILITY = (0.2, 0.4, 0.6, 0.8, 1.0)
 
-# Test jest wykonywany na pełnym grafie, ale część wartości sygnału pozostaje
-# ukryta i podlega rekonstrukcji.
+# Testing uses the full graph, but some signal values remain hidden and must be
+# reconstructed.
 TEST_OBSERVATION_PROBABILITY = EXPERIMENT_CONFIG.p_observed
 N_RUNS = EXPERIMENT_CONFIG.n_runs
 SEED = EXPERIMENT_CONFIG.seed
@@ -61,12 +60,12 @@ PSD_BETA = EXPERIMENT_CONFIG.psd_beta
 SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 SPLINE_SMOOTHING = None
 
-# Jeden profil używany w wariancie single-PSD.
+# Profile used by the single-PSD variant.
 SINGLE_PSD = REFERENCE_PSD_PROFILES[0]
 
 
 # ============================================================
-# 2. GRAF TRENINGOWY JAKO ZAGNIEŻDŻONY PODGRAF
+# 2. TRAINING GRAPH AS A NESTED SUBGRAPH
 # ============================================================
 
 
@@ -97,7 +96,7 @@ def training_subgraph(
 
 
 # ============================================================
-# 3. SPLINE PSD NA ZNORMALIZOWANEJ CZĘSTOTLIWOŚCI
+# 3. PSD SPLINE ON NORMALIZED FREQUENCIES
 # ============================================================
 
 
@@ -134,7 +133,7 @@ def fit_normalized_psd_spline(
         unique_spectrum,
         k=degree,
         s=smoothing_factor,
-        ext=3,  # poza zakresem użyj wartości brzegowej zamiast ekstrapolacji
+        ext=3,  # Use boundary values outside the fitted range.
     )
     return lambda x: np.clip(np.asarray(spline(x), dtype=float), 0.0, 1.0)
 
@@ -153,7 +152,7 @@ def transfer_gamma(
 
 
 # ============================================================
-# 4. WSPÓLNE METRYKI
+# 4. SHARED METRICS
 # ============================================================
 
 
@@ -168,6 +167,7 @@ def metric_row(
     observed: np.ndarray,
     estimate: np.ndarray,
 ) -> dict:
+    """Build one reconstruction-metric row for a visibility level."""
     return {
         "experiment": experiment,
         "method": method,
@@ -179,12 +179,11 @@ def metric_row(
         "n_test": N_TEST,
         "test_observation_probability": TEST_OBSERVATION_PROBABILITY,
         "mae": missing_mae(truth, estimate, observed),
-        "rmse": missing_rmse(truth, estimate, observed),
     }
 
 
 # ============================================================
-# 5. WARIANT 1: JEDNO PSD
+# 5. SINGLE-PSD VARIANT
 # ============================================================
 
 
@@ -200,8 +199,8 @@ def experiment_single_psd() -> pd.DataFrame:
         rng = np.random.default_rng(SEED + 10_000 * run)
         vertex_order = nested_vertex_order(full_graph, rng)
 
-        # Jeden wspólny pełny test i jedna zagnieżdżona maska testowa dla
-        # wszystkich poziomów widoczności w danym runie.
+        # Reuse one full test set and nested test mask for every visibility
+        # level within the run.
         np.random.seed(SEED + 20_000 * run)
         test_truth, _ = SignalGenerator(full_graph).generate_signals(
             N_TEST,
@@ -223,8 +222,8 @@ def experiment_single_psd() -> pd.DataFrame:
         for visibility in TRAIN_VERTEX_VISIBILITY:
             train_graph = training_subgraph(full_graph, visibility, vertex_order)
 
-            # Osobny proces na spektrum grafu treningowego, ale ten sam ciągły
-            # profil PSD co na pełnym grafie.
+            # Use a separate process on the training-graph spectrum while
+            # retaining the continuous PSD profile from the full graph.
             np.random.seed(SEED + 30_000 * run + train_graph.number_of_nodes())
             _, train_observed = SignalGenerator(train_graph).generate_signals(
                 N_TRAIN,
@@ -267,7 +266,7 @@ def experiment_single_psd() -> pd.DataFrame:
 
 
 # ============================================================
-# 6. WARIANT 2: MIXED SIGNALS
+# 6. MIXED-SIGNAL VARIANT
 # ============================================================
 
 
@@ -388,7 +387,7 @@ def experiment_mixed_signals() -> pd.DataFrame:
                 component_splines,
             )
 
-            # Globalny spline pokazuje, ile daje samo jedno PSD dla całej mieszaniny.
+            # The global spline measures the value of one PSD for the mixture.
             train_reconstructor = SignalReconstructor(train_graph)
             global_gamma = train_reconstructor.estimate_gamma(train_truth)
             global_spline = fit_normalized_psd_spline(train_graph, global_gamma)
@@ -419,7 +418,7 @@ def experiment_mixed_signals() -> pd.DataFrame:
 
 
 # ============================================================
-# 7. URUCHOMIENIE I PODSUMOWANIE
+# 7. EXECUTION AND SUMMARY
 # ============================================================
 
 
@@ -433,8 +432,6 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
         .agg(
             mae_mean=("mae", "mean"),
             mae_std=("mae", "std"),
-            rmse_mean=("rmse", "mean"),
-            rmse_std=("rmse", "std"),
             n_train_vertices=("n_train_vertices", "first"),
         )
         .sort_values(["experiment", "method", "train_vertex_visibility"])
@@ -442,6 +439,7 @@ def summarize(results: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_all() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run both spline-transfer studies and return raw and summary results."""
     single = experiment_single_psd()
     mixed = experiment_mixed_signals()
     results = pd.concat([single, mixed], ignore_index=True)

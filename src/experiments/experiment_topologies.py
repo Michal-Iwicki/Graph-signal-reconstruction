@@ -1,4 +1,4 @@
-"""Eksperyment OFAT dla topologii o zbliżonej naturalnej liczbie krawędzi."""
+"""Compare graph topologies with similar natural edge counts."""
 
 import networkx as nx
 import numpy as np
@@ -19,22 +19,22 @@ from src.experiments._helper import (
 
 
 # ============================================================
-# 1. PARAMETRY STAŁE
+# 1. FIXED PARAMETERS
 # ============================================================
 
 EXPERIMENT_CONFIG = experiment_config()
 N_NODES = EXPERIMENT_CONFIG.n_nodes
 TARGET_EDGES = 180
 
-# Parametry wynikają ze standardowych wzorów na liczbę krawędzi.
+# Derive parameters from the standard edge-count formulas.
 ERDOS_RENYI_PROBABILITY = 2 * TARGET_EDGES / (N_NODES * (N_NODES - 1))
 BARABASI_ALBERT_M = round(
     (N_NODES - np.sqrt(N_NODES**2 - 4 * TARGET_EDGES)) / 2
 )
 WATTS_STROGATZ_K = 2 * round(TARGET_EDGES / N_NODES)
 WATTS_STROGATZ_REWIRING = 0.1
-# Po symetryzacji k-NN ma od N*k/2 do N*k krawędzi. Z wynikającego
-# przedziału dla k wybieramy największą liczbę całkowitą.
+# A symmetrized k-NN graph has between N*k/2 and N*k edges. Choose the
+# largest integer k from the resulting range.
 KNN_NEIGHBORS = int(2 * TARGET_EDGES // N_NODES)
 
 N_TRAIN = EXPERIMENT_CONFIG.n_train
@@ -58,11 +58,11 @@ TOPOLOGIES = [
 
 
 # ============================================================
-# 2. NATURALNE GENEROWANIE TOPOLOGII
+# 2. NATURAL TOPOLOGY GENERATION
 # ============================================================
 
 def create_connected_knn(max_attempts=100):
-    """Losuje naturalny k-NN ponownie, jeśli realizacja jest niespójna."""
+    """Resample a natural k-NN graph until it is connected."""
     for _ in range(max_attempts):
         graph = GraphFactory.generate_nn_graph(
             N=N_NODES,
@@ -70,15 +70,15 @@ def create_connected_knn(max_attempts=100):
         )
         if nx.is_connected(graph):
             return graph
-    raise RuntimeError("Nie udało się wylosować spójnego grafu k-NN.")
+    raise RuntimeError("Could not generate a connected k-NN graph.")
 
 
 # ============================================================
-# 3. GENEROWANIE TOPOLOGII
+# 3. TOPOLOGY DISPATCH
 # ============================================================
 
 def create_graph(topology, seed):
-    """Generuje topologię bez późniejszego dodawania lub usuwania krawędzi."""
+    """Generate a topology without subsequently adding or removing edges."""
     np.random.seed(seed)
 
     if topology == "knn":
@@ -87,7 +87,7 @@ def create_graph(topology, seed):
     elif topology == "grid":
         side = int(np.sqrt(N_NODES))
         if side * side != N_NODES:
-            raise ValueError("Dla grid N_NODES musi być kwadratem liczby całkowitej.")
+            raise ValueError("N_NODES must be a perfect square for a grid graph.")
 
         graph = GraphFactory.generate_grid_graph(
             rows=side,
@@ -117,23 +117,25 @@ def create_graph(topology, seed):
         )
 
     else:
-        raise ValueError(f"Nieznana topologia: {topology}")
+        raise ValueError(f"Unknown topology: {topology}")
 
     if (
         graph.number_of_nodes() != N_NODES
         or not nx.is_connected(graph)
     ):
-        raise RuntimeError("Generator naruszył kontrakt wspólnego N lub spójność.")
+        raise RuntimeError(
+            "Generated graph violates the shared size/connectivity contract."
+        )
 
     return graph
 
 
 # ============================================================
-# 4. METRYKI I PORÓWNANIE METOD
+# 4. METHOD COMPARISON
 # ============================================================
 
 def compare_methods(graph, seed):
-    """Uczy wszystkie modele na treningu i ocenia je na osobnym teście."""
+    """Fit every model on training data and evaluate on a separate test set."""
     np.random.seed(seed)
     rng = np.random.default_rng(seed)
 
@@ -170,10 +172,11 @@ def compare_methods(graph, seed):
 
 
 # ============================================================
-# 5. EKSPERYMENT TOPOLOGII
+# 5. TOPOLOGY EXPERIMENT
 # ============================================================
 
 def experiment_topology():
+    """Evaluate reconstruction across all configured graph topologies."""
     rows = []
 
     for topology_id, topology in enumerate(TOPOLOGIES):
@@ -217,31 +220,7 @@ def experiment_topology():
 
 
 # ============================================================
-# 6. PODSUMOWANIE
-# ============================================================
-
-def summarize(results):
-    return (
-        results
-        .groupby(["topology", "method"])
-        .agg(
-            mae_mean=("mae", "mean"),
-            mae_std=("mae", "std"),
-            ari_mean=("ari", "mean"),
-            ari_std=("ari", "std"),
-            min_cluster_size_mean=("min_train_cluster_size", "mean"),
-            fallback_clusters_mean=("fallback_cluster_count", "mean"),
-            degree_std_mean=("degree_std", "mean"),
-            clustering_mean=("clustering_coefficient", "mean"),
-            path_length_mean=("average_shortest_path", "mean"),
-            n_runs=("mae", "count"),
-        )
-        .reset_index()
-    )
-
-
-# ============================================================
-# 7. START
+# 6. ENTRYPOINT
 # ============================================================
 
 def save_results(results):
