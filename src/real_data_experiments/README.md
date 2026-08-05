@@ -96,3 +96,26 @@ Movie and user IDs are stored directly as CSV row and column labels.
 
 Use `--output-dir PATH` in `movie_ratings` to change the prepared-data
 location, and pass the same path as `--data-dir PATH` to the experiment.
+
+## Warsaw air quality
+
+`air_quality.py` maps the PM2.5 stations to a complete geographic graph. Every
+pair of stations is connected and its weight uses a Gaussian kernel of the
+haversine distance. By default, the kernel bandwidth is the median pairwise
+distance; it can be overridden with `--kernel-bandwidth-km`. Exact
+snapshots repeated directly after one another are collapsed before a
+chronological 80/20 train/test split. Reported zeros are treated as native
+missing readings and are excluded from evaluation.
+
+The experiment uses the same `proposed`, `basic_psd`, and `smoothing` methods
+and the same 20%, 50%, and 80% artificial missingness levels as METR-LA:
+
+```bash
+python -m src.real_data_experiments.air_quality
+```
+
+Per-run and aggregate results, configuration, graph nodes, and weighted graph
+edges are saved under `results/air_quality/`. The current history is short, so
+the defaults allow one through three mixture components and clusters of one
+signal. Increase `--min-cluster-size` and `--max-components` after collecting
+more timestamps.
