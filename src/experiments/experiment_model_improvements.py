@@ -48,7 +48,7 @@ TOL = 1e-4
 
 METHODS = {
 
-    "clustered": {
+    "proposed": {
         "method": "clustered_reconstruction",
         "kwargs": {
             "K_list": [N_COMPONENTS],

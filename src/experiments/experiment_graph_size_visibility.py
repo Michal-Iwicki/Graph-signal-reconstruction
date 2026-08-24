@@ -36,11 +36,11 @@ N_RUNS = EXPERIMENT_CONFIG.n_runs
 SEED = EXPERIMENT_CONFIG.seed
 
 # Experiment 1 varies only the number of vertices.
-NODE_VALUES = [50, 100, 200, 400]
-FIXED_VISIBILITY = 0.5
+NODE_VALUES = [50, 100, 200, 500, 1000]
+FIXED_VISIBILITY = 0.25
 
 # Experiment 2 varies only the observation probability.
-FIXED_NODES = 100
+FIXED_NODES = 500
 VISIBILITY_VALUES = [0.1, 0.2, 0.5, 0.8]
 
 

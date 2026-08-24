@@ -24,7 +24,7 @@ from src.methods.generation import GSPGraph
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_RATINGS_PATH = PROJECT_ROOT / "data" / "movie" / "ml-25m" / "ratings.csv"
+DEFAULT_RATINGS_PATH = PROJECT_ROOT / "data" / "movie" / "ml-latest-small" / "ratings.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "movie" / "processed"
 
 

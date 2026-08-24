@@ -34,13 +34,13 @@ CONFIG_RESULTS_DIR = RESULTS_DIR / "configs"
 class ExperimentConfig:
     """Parameters shared by the maintained graph experiments."""
 
-    n_nodes: int = 100
+    n_nodes: int = 500
     k_neighbors: int = 10
     n_train: int = 600
     n_test: int = 200
-    p_observed: float = 0.5
+    p_observed: float = 0.25
     n_components: int = 5
-    n_runs: int = 10
+    n_runs: int = 50
     seed: int = 42
     alpha: float = 10.0
     psd_beta: float = 0.75

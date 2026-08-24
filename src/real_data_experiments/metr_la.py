@@ -41,7 +41,7 @@ class MetrLAConfig:
 
     data_dir: str = str(DEFAULT_DATA_DIR)
     output_dir: str = str(DEFAULT_RESULTS_DIR)
-    n_observations: int = 5000
+    n_observations: int = 1000
     train_fraction: float = 0.8
     missing_rates: tuple[float, ...] = (0.2, 0.5, 0.8)
     min_components: int = 2
@@ -358,41 +358,37 @@ def save_results(
 
 def parse_args() -> MetrLAConfig:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
-    parser.add_argument("--output-dir", default=str(DEFAULT_RESULTS_DIR))
-    parser.add_argument("--n-observations", type=int, default=2000)
-    parser.add_argument("--train-fraction", type=float, default=0.8)
-    parser.add_argument(
-        "--missing-rates",
-        type=float,
-        nargs="+",
-        default=[0.2, 0.5, 0.8],
-        metavar="RATE",
-    )
-    parser.add_argument("--min-components", type=int, default=2)
-    parser.add_argument("--max-components", type=int, default=10)
-    parser.add_argument("--n-runs", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--alpha", type=float, default=10.0)
-    parser.add_argument("--psd-beta", type=float, default=0.75)
-    parser.add_argument("--smooth-beta", type=float, default=0.75)
-    parser.add_argument("--no-standardize", action="store_true")
+    parser.add_argument("--data-dir", type=str)
+    parser.add_argument("--output-dir", type=str)
+    parser.add_argument("--n-observations", type=int)
+    parser.add_argument("--train-fraction", type=float)
+    parser.add_argument("--missing-rates", type=float, nargs="+", metavar="RATE")
+    parser.add_argument("--min-components", type=int)
+    parser.add_argument("--max-components", type=int)
+    parser.add_argument("--n-runs", type=int)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--alpha", type=float)
+    parser.add_argument("--psd-beta", type=float)
+    parser.add_argument("--smooth-beta", type=float)
+    
+    # Ustawiamy default na None zamiast na standardowe False z store_true
+    parser.add_argument("--no-standardize", action="store_true", default=None)
+    
     args = parser.parse_args()
-    return MetrLAConfig(
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        n_observations=args.n_observations,
-        train_fraction=args.train_fraction,
-        missing_rates=tuple(args.missing_rates),
-        min_components=args.min_components,
-        max_components=args.max_components,
-        n_runs=args.n_runs,
-        seed=args.seed,
-        alpha=args.alpha,
-        psd_beta=args.psd_beta,
-        smooth_beta=args.smooth_beta,
-        standardize=not args.no_standardize,
-    )
+    
+    # Filtrujemy tylko podane argumenty
+    provided_args = {k: v for k, v in vars(args).items() if v is not None}
+    
+    # Poprawka dla tupli w missing_rates
+    if "missing_rates" in provided_args:
+        provided_args["missing_rates"] = tuple(provided_args["missing_rates"])
+        
+    # Odwrócenie logiki dla flagi "no-standardize" i zmiana nazwy pod Dataclass
+    if "no_standardize" in provided_args:
+        # Jeśli użytkownik podał flagę, no_standardize to True. Wtedy standardize = False.
+        provided_args["standardize"] = not provided_args.pop("no_standardize")
+
+    return MetrLAConfig(**provided_args)
 
 
 def main() -> None:
