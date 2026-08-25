@@ -236,7 +236,12 @@ class SignalReconstructor:
         observed, zero_filled = self._zero_fill_missing(signal)
         penalty = self._psd_penalty(gamma, alpha, scaling)
 
-        system = beta * penalty
+        observed_count = int(observed.sum())
+        edge_count = self.graph.number_of_edges()
+
+        effective_beta = beta * observed_count / edge_count
+
+        system = effective_beta * penalty
         system[observed, observed] += 1.0
         return self._solve(system, zero_filled)
 
