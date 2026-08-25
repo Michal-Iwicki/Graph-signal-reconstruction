@@ -37,7 +37,7 @@ class AirQualityConfig:
     max_components: int = 15
     min_cluster_size: int = 1
     kernel_bandwidth_km: float | None = None
-    k_neighbors: int = -1
+    k_neighbors: int = 10   # can be set to -1 to utilize all edges
     n_runs: int = 10
     seed: int = 42
     alpha: float = 10.0

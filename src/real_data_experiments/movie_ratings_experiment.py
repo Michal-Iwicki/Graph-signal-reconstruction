@@ -1,7 +1,7 @@
 """Compare reconstruction methods on explicit movie ratings.
 
 Movies are graph vertices and users are graph signals. The prepared movie
-graph uses cosine similarity. Native missing ratings are never used as ground
+graph uses MFS similarity. Native missing ratings are never used as ground
 truth: metrics cover only known test ratings that were deliberately hidden by
 the experiment.
 
@@ -42,7 +42,7 @@ class MovieRatingsConfig:
     train_fraction: float = 0.8
     missing_rates: tuple[float, ...] = (0.2, 0.5, 0.8)
     min_components: int = 2
-    max_components: int = 10
+    max_components: int = 15
     n_runs: int = 3
     seed: int = 42
     alpha: float = 10.0
@@ -183,7 +183,6 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
                         "missing_rate": missing_rate,
                         "method": method,
                         "mae": float(np.mean(np.abs(errors))),
-                        "rmse": float(np.sqrt(np.mean(errors**2))),
                         "n_hidden_test_ratings": int(errors.size),
                         "n_train": train.shape[1],  # liczba użytkowników treningowych
                         "n_test": test.shape[1],    # liczba użytkowników testowych
@@ -210,7 +209,7 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
         "native_rating_density": float(np.isfinite(signals).mean()),
         "graph_edges": graph.number_of_edges(),
         "graph_connected_components": nx.number_connected_components(graph),
-        "graph_source": "prepared cosine-similarity adjacency",
+        "graph_source": "prepared Multi-factor similarity adjacency",
         "component_candidates": component_candidates,
         "component_selection": "minimum Yang cost on training observations",
         "metric_scope": "known test ratings hidden artificially by the experiment",
@@ -234,8 +233,6 @@ def save_results(
         .agg(
             mae=("mae", "mean"),
             std_mae=("mae", "std"),
-            rmse=("rmse", "mean"),
-            std_rmse=("rmse", "std"),
         )
         .reset_index()
     )
@@ -281,7 +278,7 @@ def main() -> None:
     config = parse_args()
     results, metadata = run_experiment(config)
     paths = save_results(results, metadata, config.output_dir)
-    print("\n" + results.groupby(["missing_rate", "method"])[["mae", "rmse"]].mean().to_string())
+    print("\n" + results.groupby(["missing_rate", "method"])[["mae"]].mean().to_string())
     for path in paths:
         print(f"Saved {path}")
 

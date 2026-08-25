@@ -5,6 +5,9 @@ value of a signal at a vertex is that user's rating of the corresponding
 movie. Missing ratings remain ``NaN``; they are replaced by zero only while
 computing cosine similarities, where zero means "no contribution".
 
+The graph is now built using the Multi-factor Similarity (MFS) integrating
+extreme behaviors, Jaccard index, and cosine similarity.
+
 The default column names match MovieLens ``ratings.csv``.
 """
 
@@ -14,6 +17,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Hashable
+import warnings
 
 import networkx as nx
 import numpy as np
@@ -139,15 +143,18 @@ def build_movie_similarity_graph(
     *,
     n_neighbors: int = 20,
     min_similarity: float = 0.0,
-    similarity_shrinkage: float = 10.0,
+    similarity_shrinkage: float = 10.0,  # kept for compatibility
+    r_med: float = 3.0,
+    a: float = 1.0,
+    b: float = 1.0,
 ) -> GSPGraph:
-    """Create a weighted, undirected cosine-similarity k-NN movie graph.
-
-    Cosine similarity is computed from zero-filled rating vectors.  A
-    significance weight ``n_common / (n_common + similarity_shrinkage)``
-    reduces unreliable similarities based on very few co-rated users.
-    Finally, each movie retains its strongest ``n_neighbors`` positive links
-    and directed choices are symmetrized by taking their maximum.
+    """Create a weighted, undirected MFS k-NN movie graph.
+    
+    Replaces classic cosine similarity with Multi-factor similarity (MFS)
+    that evaluates:
+    1. Jaccard similarity of raters (J)
+    2. Cosine similarity of filled ratings (s3)
+    3. Extreme behavior similarity (S_ik) based on system median and user mean.
     """
     values = np.asarray(signals, dtype=float)
     movies = tuple(movie_ids)
@@ -159,27 +166,80 @@ def build_movie_similarity_graph(
         raise ValueError("n_neighbors must be a positive integer.")
     if not 0.0 <= min_similarity <= 1.0:
         raise ValueError("min_similarity must lie in [0, 1].")
-    if similarity_shrinkage < 0 or not np.isfinite(similarity_shrinkage):
-        raise ValueError("similarity_shrinkage must be finite and non-negative.")
 
+    n_movies, n_users = values.shape
     observed = np.isfinite(values)
     if np.any(observed.sum(axis=1) == 0):
         raise ValueError("Every movie must have at least one finite rating.")
+    
     filled = np.where(observed, values, 0.0)
-    similarity = cosine_similarity(filled)
-    common = observed.astype(np.float64) @ observed.astype(np.float64).T
-    if similarity_shrinkage:
-        similarity *= common / (common + similarity_shrinkage)
-    np.fill_diagonal(similarity, 0.0)
-    similarity[similarity < min_similarity] = 0.0
 
+    # 1. Cosine similarity (s3)
+    s3_cos = cosine_similarity(filled)
+
+    # 2. Jaccard weight (J)
+    common_ratings = observed.astype(np.float64) @ observed.astype(np.float64).T
+    I_m = observed.sum(axis=1)
+    union_ratings = I_m[:, None] + I_m[None, :] - common_ratings
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        J_matrix = np.where(union_ratings > 0, common_ratings / union_ratings, 0.0)
+
+    # 3. Extreme behavior similarity (S_ik)
+    # We use nanmean with warning suppression for users with 0 ratings (should not happen after filtering, but safe)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        user_means = np.nanmean(np.where(observed, values, np.nan), axis=0)
+    user_means = np.nan_to_num(user_means, nan=r_med)
+
+    # Pre-calculate absolute deviations
+    D1 = np.abs(values - r_med)
+    D2 = np.abs(values - user_means[None, :])
+    D1[~observed] = 0.0
+    D2[~observed] = 0.0
+
+    S_ik_matrix = np.zeros((n_movies, n_movies))
+
+    # Calculate extreme behavior over co-rated elements
+    for i in range(n_movies):
+        for k in range(i + 1, n_movies):
+            co_rated = observed[i] & observed[k]
+            if not np.any(co_rated):
+                continue
+            
+            d1_i = D1[i, co_rated]
+            d1_k = D1[k, co_rated]
+            d2_i = D2[i, co_rated]
+            d2_k = D2[k, co_rated]
+
+            s1 = 1.0 / (1.0 + np.exp(-a * (d1_i * d1_k)))
+            s2 = 1.0 / (1.0 + np.exp(-b * (d2_i * d2_k)))
+
+            numerator = np.sum(s1 * s2)
+            denominator = np.sqrt(np.sum(s1**2) * np.sum(s2**2))
+
+            if denominator > 0:
+                S_ik_matrix[i, k] = S_ik_matrix[k, i] = numerator / denominator
+
+    # Fill diagonal for structural consistency
+    np.fill_diagonal(S_ik_matrix, 1.0)
+
+    # 4. Fusion of factors
+    multi_factor_similarity = J_matrix * s3_cos * S_ik_matrix
+
+    # Apply thresholds and clean diagonal
+    multi_factor_similarity[multi_factor_similarity < min_similarity] = 0.0
+    np.fill_diagonal(multi_factor_similarity, 0.0)
+
+    # Build graph
     graph = nx.Graph()
     graph.add_nodes_from(movies)
     k = min(n_neighbors, len(movies) - 1)
+    
     for row, movie_id in enumerate(movies):
-        candidates = np.argpartition(similarity[row], -k)[-k:]
+        candidates = np.argpartition(multi_factor_similarity[row], -k)[-k:]
         for column in candidates:
-            weight = float(similarity[row, column])
+            weight = float(multi_factor_similarity[row, column])
             if weight <= 0.0:
                 continue
             other_id = movies[int(column)]
@@ -232,7 +292,7 @@ def build_movie_rating_data(
     if frame.empty:
         raise ValueError("No ratings remain after minimum-count filtering.")
         
-    # UWAGA ZMIANA TUTAJ: Wiersze to filmy, kolumny to użytkownicy
+    # Wiersze to filmy, kolumny to uzytkownicy
     matrix = frame.pivot_table(
         index=movie_col, columns=user_col, values=rating_col, aggfunc="mean", sort=True
     )
