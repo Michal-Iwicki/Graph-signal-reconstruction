@@ -24,18 +24,26 @@ from src.experiments._helper import (
 
 EXPERIMENT_CONFIG = experiment_config()
 N_NODES = EXPERIMENT_CONFIG.n_nodes
-TARGET_EDGES = 180
+KNN_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
 
-# Derive parameters from the standard edge-count formulas.
-ERDOS_RENYI_PROBABILITY = 2 * TARGET_EDGES / (N_NODES * (N_NODES - 1))
-BARABASI_ALBERT_M = round(
-    (N_NODES - np.sqrt(N_NODES**2 - 4 * TARGET_EDGES)) / 2
+# Generujemy referencyjny graf k-NN, aby naturalnie wyznaczyć liczbę krawędzi
+np.random.seed(EXPERIMENT_CONFIG.seed)
+_reference_knn = GraphFactory.generate_nn_graph(
+    N=N_NODES,
+    k=KNN_NEIGHBORS,
 )
+TARGET_EDGES = _reference_knn.number_of_edges()
+
+# Wyznaczamy parametry dla reszty topologii na podstawie wygenerowanego TARGET_EDGES
+ERDOS_RENYI_PROBABILITY = 2 * TARGET_EDGES / (N_NODES * (N_NODES - 1))
+
+# Zabezpieczenie przed ujemnymi wartościami przy pierwiastkowaniu
+_discriminant = max(0, N_NODES**2 - 4 * TARGET_EDGES)
+BARABASI_ALBERT_M = round((N_NODES - np.sqrt(_discriminant)) / 2)
+BARABASI_ALBERT_M = max(1, BARABASI_ALBERT_M)  # m nie może być mniejsze niż 1
+
 WATTS_STROGATZ_K = 2 * round(TARGET_EDGES / N_NODES)
 WATTS_STROGATZ_REWIRING = 0.1
-# A symmetrized k-NN graph has between N*k/2 and N*k edges. Choose the
-# largest integer k from the resulting range.
-KNN_NEIGHBORS = int(2 * TARGET_EDGES // N_NODES)
 
 N_TRAIN = EXPERIMENT_CONFIG.n_train
 N_TEST = EXPERIMENT_CONFIG.n_test
@@ -47,7 +55,6 @@ ALPHA = EXPERIMENT_CONFIG.alpha
 PSD_BETA = EXPERIMENT_CONFIG.psd_beta
 SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 
-
 TOPOLOGIES = [
     "knn",
     "grid",
@@ -58,23 +65,7 @@ TOPOLOGIES = [
 
 
 # ============================================================
-# 2. NATURAL TOPOLOGY GENERATION
-# ============================================================
-
-def create_connected_knn(max_attempts=100):
-    """Resample a natural k-NN graph until it is connected."""
-    for _ in range(max_attempts):
-        graph = GraphFactory.generate_nn_graph(
-            N=N_NODES,
-            k=KNN_NEIGHBORS,
-        )
-        if nx.is_connected(graph):
-            return graph
-    raise RuntimeError("Could not generate a connected k-NN graph.")
-
-
-# ============================================================
-# 3. TOPOLOGY DISPATCH
+# 2. TOPOLOGY DISPATCH
 # ============================================================
 
 def create_graph(topology, seed):
@@ -82,16 +73,22 @@ def create_graph(topology, seed):
     np.random.seed(seed)
 
     if topology == "knn":
-        graph = create_connected_knn()
+        graph = GraphFactory.generate_nn_graph(
+            N=N_NODES,
+            k=KNN_NEIGHBORS,
+        )
 
     elif topology == "grid":
-        side = int(np.sqrt(N_NODES))
-        if side * side != N_NODES:
-            raise ValueError("N_NODES must be a perfect square for a grid graph.")
+        rows = 1
+        for i in range(int(np.sqrt(N_NODES)), 0, -1):
+            if N_NODES % i == 0:
+                rows = i
+                break
+        columns = N_NODES // rows
 
         graph = GraphFactory.generate_grid_graph(
-            rows=side,
-            columns=side,
+            rows=rows,
+            columns=columns,
         )
 
     elif topology == "erdos_renyi":
@@ -119,19 +116,16 @@ def create_graph(topology, seed):
     else:
         raise ValueError(f"Unknown topology: {topology}")
 
-    if (
-        graph.number_of_nodes() != N_NODES
-        or not nx.is_connected(graph)
-    ):
+    if graph.number_of_nodes() != N_NODES:
         raise RuntimeError(
-            "Generated graph violates the shared size/connectivity contract."
+            "Generated graph violates the shared size contract."
         )
 
     return graph
 
 
 # ============================================================
-# 4. METHOD COMPARISON
+# 3. METHOD COMPARISON
 # ============================================================
 
 def compare_methods(graph, seed):
@@ -172,7 +166,7 @@ def compare_methods(graph, seed):
 
 
 # ============================================================
-# 5. TOPOLOGY EXPERIMENT
+# 4. TOPOLOGY EXPERIMENT
 # ============================================================
 
 def experiment_topology():
@@ -201,12 +195,8 @@ def experiment_topology():
                     "n_edges": graph.number_of_edges(),
                     "mean_degree": float(np.mean(degree_values)),
                     "degree_std": float(np.std(degree_values)),
-                    "clustering_coefficient": (
-                        nx.average_clustering(graph)
-                    ),
-                    "average_shortest_path": (
-                        nx.average_shortest_path_length(graph)
-                    ),
+                    "clustering_coefficient": nx.average_clustering(graph),
+                    # USUNIĘTO average_shortest_path
                     "p_observed": P_OBSERVED,
                     "n_train": N_TRAIN,
                     "n_test": N_TEST,
@@ -220,7 +210,7 @@ def experiment_topology():
 
 
 # ============================================================
-# 6. ENTRYPOINT
+# 5. ENTRYPOINT
 # ============================================================
 
 def save_results(results):

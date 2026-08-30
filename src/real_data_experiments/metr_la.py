@@ -45,8 +45,8 @@ class MetrLAConfig:
     train_fraction: float = 0.8
     missing_rates: tuple[float, ...] = (0.2, 0.5, 0.8)
     min_components: int = 2
-    max_components: int = 15
-    n_runs: int = 3
+    max_components: int = 10
+    n_runs: int = 50
     seed: int = 42
     alpha: float = 10.0
     psd_beta: float = 0.75
@@ -285,7 +285,6 @@ def run_experiment(config: MetrLAConfig) -> tuple[pd.DataFrame, dict]:
                         "missing_rate": missing_rate,
                         "method": method,
                         "mae": missing_mae(test, estimate, test_observed),
-                        "rmse": float(np.sqrt(np.mean(error**2))),
                         "n_train": train.shape[1],
                         "n_test": test.shape[1],
                         "n_nodes": train.shape[0],
@@ -342,9 +341,7 @@ def save_results(
         results.groupby(["missing_rate", "method"])
         .agg(
             mae=("mae", "mean"),
-            std_mae=("mae", "std"),
-            rmse=("rmse", "mean"),
-            std_rmse=("rmse", "std"),
+            std_mae=("mae", "std")
         )
         .reset_index()
     )
@@ -397,7 +394,7 @@ def main() -> None:
     paths = save_results(results, metadata, config.output_dir)
     print(
         "\n"
-        + results.groupby(["missing_rate", "method"])[["mae", "rmse"]]
+        + results.groupby(["missing_rate", "method"])[["mae"]]
         .mean()
         .to_string()
     )

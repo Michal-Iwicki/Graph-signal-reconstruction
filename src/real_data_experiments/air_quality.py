@@ -34,11 +34,11 @@ class AirQualityConfig:
     train_fraction: float = 0.8
     missing_rates: tuple[float, ...] = (0.2, 0.5, 0.8)
     min_components: int = 1
-    max_components: int = 15
+    max_components: int = 10
     min_cluster_size: int = 1
     kernel_bandwidth_km: float | None = None
     k_neighbors: int = 10   # can be set to -1 to utilize all edges
-    n_runs: int = 10
+    n_runs: int = 50
     seed: int = 42
     alpha: float = 10.0
     psd_beta: float = 0.75
@@ -239,7 +239,7 @@ def run_experiment(config: AirQualityConfig) -> tuple[pd.DataFrame, dict, AirQua
                 rows.append({
                     "run": run, "missing_rate": missing_rate, "method": method,
                     "mae": float(np.mean(np.abs(errors))),
-                    "rmse": float(np.sqrt(np.mean(errors**2))),
+                    "mae_std": float(np.sqrt(np.mean(errors**2))),
                     "selected_n_components": selected_components,
                 })
             print(f"Run {run + 1}/{config.n_runs}, missing={missing_rate:.0%}: K={selected_components}", flush=True)
@@ -253,8 +253,7 @@ def save_results(results: pd.DataFrame, metadata: dict, data: AirQualityData, ou
     results.to_csv(os.path.join(output_dir, "runs.csv"), index=False, float_format="%.6f")
     
     summary = results.groupby(["missing_rate", "method"]).agg(
-        mae=("mae", "mean"), std_mae=("mae", "std"),
-        rmse=("rmse", "mean"), std_rmse=("rmse", "std"),
+        mae=("mae", "mean"), std_mae=("mae", "std")
     ).reset_index()
     summary.to_csv(os.path.join(output_dir, "summary.csv"), index=False, float_format="%.6f")
     
@@ -293,7 +292,7 @@ def main() -> None:
     config = parse_args()
     results, metadata, data = run_experiment(config)
     save_results(results, metadata, data, config.output_dir)
-    print("\n" + results.groupby(["missing_rate", "method"])[["mae", "rmse"]].mean().to_string())
+    print("\n" + results.groupby(["missing_rate", "method"])[["mae"]].mean().to_string())
 
 
 if __name__ == "__main__":

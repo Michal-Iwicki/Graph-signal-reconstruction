@@ -34,7 +34,7 @@ CONFIG_RESULTS_DIR = RESULTS_DIR / "configs"
 class ExperimentConfig:
     """Parameters shared by the maintained graph experiments."""
 
-    n_nodes: int = 500
+    n_nodes: int = 250
     k_neighbors: int = 10
     n_train: int = 600
     n_test: int = 200

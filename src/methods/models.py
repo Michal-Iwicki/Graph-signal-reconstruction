@@ -331,7 +331,7 @@ class MixedSignalReconstruction:
                 psds,
                 labels,
                 options.get("alpha", 10.0),
-                options.get("beta", 1.0),
+                options.get("beta", 0.75),
             )
             self._cache_splines(
                 psds,

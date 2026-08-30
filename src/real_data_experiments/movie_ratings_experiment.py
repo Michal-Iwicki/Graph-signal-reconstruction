@@ -42,8 +42,8 @@ class MovieRatingsConfig:
     train_fraction: float = 0.8
     missing_rates: tuple[float, ...] = (0.2, 0.5, 0.8)
     min_components: int = 2
-    max_components: int = 15
-    n_runs: int = 3
+    max_components: int = 10
+    n_runs: int = 50
     seed: int = 42
     alpha: float = 10.0
     psd_beta: float = 0.75

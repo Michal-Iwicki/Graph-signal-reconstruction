@@ -1,18 +1,17 @@
 """Transfer PSDs learned on a partial training graph to the full test graph.
 
-Two studies are implemented:
-
-1. ``experiment_single_psd`` -- one stationary graph process;
-2. ``experiment_mixed_signals`` -- a mixture of stationary processes.
+This study implements:
+1. ``experiment_mixed_signals`` -- a mixture of stationary processes.
 
 ``TRAIN_VERTEX_VISIBILITY`` controls the fraction of vertices present in the
 training graph.  Testing always uses the complete graph.  PSD estimates learned
 on the smaller graph are converted into splines on normalized graph frequency
 ``lambda / lambda_max`` and evaluated on the spectrum of the full graph.
 
-The mixed experiment uses true source labels for both train and test signals.
-This deliberately isolates PSD/spline transfer from cross-graph classification,
-whose feature dimensions differ when the training graph has fewer vertices.
+The mixed experiment compares an 'oracle' transfer (using true source labels)
+with a 'proposed' transfer (which clusters the signals automatically to learn
+and assign the splines) and global baselines. It evaluates both reconstruction
+error (MAE) and clustering performance (Adjusted Rand Index).
 """
 
 from collections.abc import Callable, Sequence
@@ -21,6 +20,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from scipy.interpolate import UnivariateSpline
+from sklearn.cluster import KMeans
+from sklearn.metrics import adjusted_rand_score
 
 from src.methods.generation import GSPGraph, GraphFactory, SignalGenerator
 from src.methods.reconstruction import SignalReconstructor
@@ -28,6 +29,7 @@ from src.experiments._helper import (
     REFERENCE_PSD_PROBABILITIES,
     REFERENCE_PSD_PROFILES,
     apply_observation_mask,
+    clustering_accuracy,
     config_dict,
     draw_nested_mask_uniforms,
     experiment_config,
@@ -41,7 +43,7 @@ from src.experiments._helper import (
 # 1. SHARED PARAMETERS
 # ============================================================
 
-EXPERIMENT_CONFIG = experiment_config(n_nodes=1000)
+EXPERIMENT_CONFIG = experiment_config()
 N_NODES = EXPERIMENT_CONFIG.n_nodes
 K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
 N_TRAIN = EXPERIMENT_CONFIG.n_train
@@ -59,9 +61,6 @@ ALPHA = EXPERIMENT_CONFIG.alpha
 PSD_BETA = EXPERIMENT_CONFIG.psd_beta
 SMOOTH_BETA = EXPERIMENT_CONFIG.smooth_beta
 SPLINE_SMOOTHING = None
-
-# Profile used by the single-PSD variant.
-SINGLE_PSD = REFERENCE_PSD_PROFILES[0]
 
 
 # ============================================================
@@ -166,6 +165,10 @@ def metric_row(
     truth: np.ndarray,
     observed: np.ndarray,
     estimate: np.ndarray,
+    graph_seed: int,
+    data_seed: int,
+    ari: float = np.nan,
+    clustering_accuracy: float = np.nan,
 ) -> dict:
     """Build one reconstruction-metric row for a visibility level."""
     return {
@@ -178,105 +181,26 @@ def metric_row(
         "n_train": N_TRAIN,
         "n_test": N_TEST,
         "test_observation_probability": TEST_OBSERVATION_PROBABILITY,
+        "graph_seed": graph_seed,
+        "data_seed": data_seed,
         "mae": missing_mae(truth, estimate, observed),
+        "ari": ari,
+        "clustering_accuracy": clustering_accuracy,
     }
 
 
 # ============================================================
-# 5. SINGLE-PSD VARIANT
+# 5. MIXED-SIGNAL VARIANT
 # ============================================================
 
 
-def experiment_single_psd() -> pd.DataFrame:
-    """Learn one PSD on partial graphs and reconstruct on the full graph."""
-    rows = []
-
-    for run in tracked_range(N_RUNS, "spline transfer: single PSD"):
-        graph_seed = SEED + run
-        np.random.seed(graph_seed)
-        full_graph = GraphFactory.generate_nn_graph(N_NODES, K_NEIGHBORS)
-
-        rng = np.random.default_rng(SEED + 10_000 * run)
-        vertex_order = nested_vertex_order(full_graph, rng)
-
-        # Reuse one full test set and nested test mask for every visibility
-        # level within the run.
-        np.random.seed(SEED + 20_000 * run)
-        test_truth, _ = SignalGenerator(full_graph).generate_signals(
-            N_TEST,
-            1.0,
-            SINGLE_PSD,
-        )
-        test_uniforms = draw_nested_mask_uniforms(test_truth.shape, rng)
-        test_observed = apply_observation_mask(
-            test_truth,
-            TEST_OBSERVATION_PROBABILITY,
-            test_uniforms,
-        )
-        full_reconstructor = SignalReconstructor(full_graph)
-        smooth_estimate = full_reconstructor.reconstruct_smooth(
-            test_observed,
-            beta=SMOOTH_BETA,
-        )
-
-        for visibility in TRAIN_VERTEX_VISIBILITY:
-            train_graph = training_subgraph(full_graph, visibility, vertex_order)
-
-            # Use a separate process on the training-graph spectrum while
-            # retaining the continuous PSD profile from the full graph.
-            np.random.seed(SEED + 30_000 * run + train_graph.number_of_nodes())
-            _, train_observed = SignalGenerator(train_graph).generate_signals(
-                N_TRAIN,
-                1.0,
-                SINGLE_PSD,
-            )
-            train_reconstructor = SignalReconstructor(train_graph)
-            gamma_train = train_reconstructor.estimate_gamma(train_observed)
-            spline = fit_normalized_psd_spline(train_graph, gamma_train)
-            gamma_full = transfer_gamma(spline, full_graph)
-            spline_estimate = full_reconstructor.reconstruct_psd(
-                test_observed,
-                gamma=gamma_full,
-                alpha=ALPHA,
-                beta=PSD_BETA,
-            )
-
-            rows.append(metric_row(
-                experiment="single_psd",
-                method="transferred_psd_spline",
-                run=run,
-                visibility=visibility,
-                train_graph=train_graph,
-                truth=test_truth,
-                observed=test_observed,
-                estimate=spline_estimate,
-            ))
-            rows.append(metric_row(
-                experiment="single_psd",
-                method="smoothing",
-                run=run,
-                visibility=visibility,
-                train_graph=train_graph,
-                truth=test_truth,
-                observed=test_observed,
-                estimate=smooth_estimate,
-            ))
-
-    return pd.DataFrame(rows)
-
-
-# ============================================================
-# 6. MIXED-SIGNAL VARIANT
-# ============================================================
-
-
-def estimate_component_splines(
+def estimate_oracle_splines(
     train_graph: GSPGraph,
     train_observed: np.ndarray,
     train_labels: np.ndarray,
     n_components: int,
 ) -> dict[int, Callable[[np.ndarray], np.ndarray]]:
-    """Estimate one PSD spline per known mixture component."""
+    """Estimate one PSD spline per known mixture component (Oracle)."""
     reconstructor = SignalReconstructor(train_graph)
     splines = {}
     for component in range(n_components):
@@ -288,7 +212,7 @@ def estimate_component_splines(
     return splines
 
 
-def reconstruct_mixture_from_splines(
+def reconstruct_mixture_oracle(
     full_graph: GSPGraph,
     test_observed: np.ndarray,
     test_labels: np.ndarray,
@@ -307,6 +231,84 @@ def reconstruct_mixture_from_splines(
             beta=PSD_BETA,
         )
     return estimate
+
+
+def estimate_proposed_splines(
+    train_graph: GSPGraph,
+    train_signals: np.ndarray,
+    n_components: int,
+    random_state: int,
+) -> tuple[dict[int, Callable[[np.ndarray], np.ndarray]], np.ndarray]:
+    """Estimate PSD splines without known labels by clustering training signals."""
+    reconstructor = SignalReconstructor(train_graph)
+    eigenvectors = train_graph.eigenvectors
+    
+    # Feature extraction for clustering: squared GFT magnitudes
+    gft_magnitudes_sq = np.abs(eigenvectors.T @ train_signals)**2
+
+    kmeans = KMeans(n_clusters=n_components, random_state=random_state, n_init=10)
+    predicted_labels = kmeans.fit_predict(gft_magnitudes_sq.T)
+
+    splines = {}
+    for component in range(n_components):
+        selected = predicted_labels == component
+        if not np.any(selected):
+            # Fallback if a cluster is empty
+            gamma = reconstructor.estimate_gamma(train_signals)
+        else:
+            gamma = reconstructor.estimate_gamma(train_signals[:, selected])
+        splines[component] = fit_normalized_psd_spline(train_graph, gamma)
+        
+    return splines, predicted_labels
+
+
+def reconstruct_mixture_proposed(
+    full_graph: GSPGraph,
+    test_observed: np.ndarray,
+    test_uniforms: np.ndarray,
+    p_observed: float,
+    splines: dict[int, Callable[[np.ndarray], np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Classify test signals using reconstruction error and reconstruct."""
+    reconstructor = SignalReconstructor(full_graph)
+    n_components = len(splines)
+    n_test = test_observed.shape[1]
+
+    transferred_gammas = {
+        c: transfer_gamma(splines[c], full_graph)
+        for c in range(n_components)
+    }
+
+    # Generate all candidate reconstructions
+    candidates = np.zeros((full_graph.number_of_nodes(), n_test, n_components))
+    for c in range(n_components):
+        candidates[:, :, c] = reconstructor.reconstruct_psd(
+            test_observed,
+            gamma=transferred_gammas[c],
+            alpha=ALPHA,
+            beta=PSD_BETA,
+        )
+        
+    # Determine which nodes were observed
+    is_observed = test_uniforms <= p_observed
+    
+    # Calculate reconstruction error only on observed nodes
+    errors = np.zeros((n_test, n_components))
+    for c in range(n_components):
+        residual = test_observed - candidates[:, :, c]
+        residual[~is_observed] = 0.0
+        errors[:, c] = np.sum(residual**2, axis=0)
+        
+    # Assign each signal to the component that minimized reconstruction error
+    predicted_labels = np.argmin(errors, axis=1)
+    
+    estimate = np.empty_like(test_observed, dtype=float)
+    for c in range(n_components):
+        selected = predicted_labels == c
+        if np.any(selected):
+            estimate[:, selected] = candidates[:, selected, c]
+            
+    return estimate, predicted_labels
 
 
 def _generate_complete_mixture(
@@ -338,13 +340,14 @@ def experiment_mixed_signals() -> pd.DataFrame:
 
     for run in tracked_range(N_RUNS, "spline transfer: mixed PSD"):
         graph_seed = SEED + run
+        data_seed = SEED + 40_000 * run
         np.random.seed(graph_seed)
         full_graph = GraphFactory.generate_nn_graph(N_NODES, K_NEIGHBORS)
 
-        rng = np.random.default_rng(SEED + 40_000 * run)
+        rng = np.random.default_rng(data_seed)
         vertex_order = nested_vertex_order(full_graph, rng)
 
-        np.random.seed(SEED + 50_000 * run)
+        np.random.seed(data_seed + 10_000)
         test_truth, test_labels = _generate_complete_mixture(
             full_graph,
             N_TEST,
@@ -366,7 +369,7 @@ def experiment_mixed_signals() -> pd.DataFrame:
         for visibility in TRAIN_VERTEX_VISIBILITY:
             train_graph = training_subgraph(full_graph, visibility, vertex_order)
 
-            np.random.seed(SEED + 60_000 * run + train_graph.number_of_nodes())
+            np.random.seed(data_seed + 20_000 + train_graph.number_of_nodes())
             train_truth, train_labels = _generate_complete_mixture(
                 train_graph,
                 N_TRAIN,
@@ -374,20 +377,41 @@ def experiment_mixed_signals() -> pd.DataFrame:
                 REFERENCE_PSD_PROBABILITIES,
             )
 
-            component_splines = estimate_component_splines(
+            # --- 1. Oracle splines (Uses true labels) ---
+            oracle_splines = estimate_oracle_splines(
                 train_graph,
                 train_truth,
                 train_labels,
                 n_components,
             )
-            component_estimate = reconstruct_mixture_from_splines(
+            oracle_estimate = reconstruct_mixture_oracle(
                 full_graph,
                 test_observed,
                 test_labels,
-                component_splines,
+                oracle_splines,
+            )
+            
+            # --- 2. Proposed splines (Automatic clustering and assignment) ---
+            proposed_splines, predicted_train_labels = estimate_proposed_splines(
+                train_graph,
+                train_truth,
+                n_components,
+                random_state=data_seed + 30_000,
+            )
+            proposed_estimate, predicted_test_labels = reconstruct_mixture_proposed(
+                full_graph,
+                test_observed,
+                test_uniforms,
+                TEST_OBSERVATION_PROBABILITY,
+                proposed_splines,
             )
 
-            # The global spline measures the value of one PSD for the mixture.
+            # Poprawne wywołanie metryk na zbiorze testowym w taki sposób,
+            # by zgadzało się z oczekiwaniami _helper.py
+            ari_proposed = adjusted_rand_score(test_labels, predicted_test_labels)
+            acc_proposed = clustering_accuracy(test_labels, predicted_test_labels)
+
+            # --- 3. Global spline baseline (Single PSD for the mixture) ---
             train_reconstructor = SignalReconstructor(train_graph)
             global_gamma = train_reconstructor.estimate_gamma(train_truth)
             global_spline = fit_normalized_psd_spline(train_graph, global_gamma)
@@ -398,10 +422,11 @@ def experiment_mixed_signals() -> pd.DataFrame:
                 beta=PSD_BETA,
             )
 
-            for method, estimate in (
-                ("oracle_component_psd_splines", component_estimate),
-                ("global_psd_spline", global_estimate),
-                ("smoothing", smooth_estimate),
+            for method, estimate, ari, acc in (
+                ("oracle", oracle_estimate, 1.0, 1.0),
+                ("proposed", proposed_estimate, ari_proposed, acc_proposed),
+                ("global_psd_spline", global_estimate, np.nan, np.nan),
+                ("smoothing", smooth_estimate, np.nan, np.nan),
             ):
                 rows.append(metric_row(
                     experiment="mixed_signals",
@@ -412,58 +437,43 @@ def experiment_mixed_signals() -> pd.DataFrame:
                     truth=test_truth,
                     observed=test_observed,
                     estimate=estimate,
+                    graph_seed=graph_seed,
+                    data_seed=data_seed,
+                    ari=ari,
+                    clustering_accuracy=acc,
                 ))
 
     return pd.DataFrame(rows)
 
 
 # ============================================================
-# 7. EXECUTION AND SUMMARY
+# 6. ENTRYPOINT
 # ============================================================
 
-
-def summarize(results: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate reconstruction error over runs."""
-    return (
-        results.groupby(
-            ["experiment", "method", "train_vertex_visibility"],
-            as_index=False,
-        )
-        .agg(
-            mae_mean=("mae", "mean"),
-            mae_std=("mae", "std"),
-            n_train_vertices=("n_train_vertices", "first"),
-        )
-        .sort_values(["experiment", "method", "train_vertex_visibility"])
-    )
-
-
-def run_all() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run both spline-transfer studies and return raw and summary results."""
-    single = experiment_single_psd()
-    mixed = experiment_mixed_signals()
-    results = pd.concat([single, mixed], ignore_index=True)
-    return results, summarize(results)
-
-
-def save_results(results):
-    """Save spline-transfer summaries and parameters fixed across visibility."""
+def save_results(results, suite, varied_columns, **config_overrides):
+    """Save one graph-size/visibility study with its constant metadata."""
     save_aggregated_results(
-        results, "spline_transfer",
-        ["experiment", "train_vertex_visibility"],
+        results, suite, varied_columns,
         config_dict(
             EXPERIMENT_CONFIG,
-            exclude=("p_observed",),
-            test_observation_probability=TEST_OBSERVATION_PROBABILITY,
-            spline_smoothing=SPLINE_SMOOTHING,
+            exclude=varied_columns,
+            **config_overrides,
         ),
     )
 
 
 def main():
-    """Run and save both spline-transfer studies."""
-    raw_results, _ = run_all()
-    save_results(raw_results)
+    """Run and save the spline-transfer study."""
+    results = experiment_mixed_signals()
+    
+    # helper.py sam podzieli to na dwa pliki: '_reconstruction_results' oraz '_clustering_results',
+    # ponieważ dodaliśmy wymagane kolumny 'ari' oraz 'clustering_accuracy' w DataFrame.
+    save_results(
+        results,
+        "spline_transfer",
+        ["experiment", "train_vertex_visibility"],
+        spline_smoothing=SPLINE_SMOOTHING,
+    )
 
 
 if __name__ == "__main__":
