@@ -406,8 +406,7 @@ def experiment_mixed_signals() -> pd.DataFrame:
                 proposed_splines,
             )
 
-            # Poprawne wywołanie metryk na zbiorze testowym w taki sposób,
-            # by zgadzało się z oczekiwaniami _helper.py
+            # Evaluate clustering on the test set using the shared metric schema.
             ari_proposed = adjusted_rand_score(test_labels, predicted_test_labels)
             acc_proposed = clustering_accuracy(test_labels, predicted_test_labels)
 
@@ -466,8 +465,8 @@ def main():
     """Run and save the spline-transfer study."""
     results = experiment_mixed_signals()
     
-    # helper.py sam podzieli to na dwa pliki: '_reconstruction_results' oraz '_clustering_results',
-    # ponieważ dodaliśmy wymagane kolumny 'ari' oraz 'clustering_accuracy' w DataFrame.
+    # The shared helper writes reconstruction and clustering metrics to separate
+    # files because the results include both ARI and clustering accuracy.
     save_results(
         results,
         "spline_transfer",

@@ -656,7 +656,7 @@ def gmm_mixed_signal_experiment(
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
 
-    # Używamy tracked_range tylko, gdy verbose=True. W przeciwnym razie zwykłe range()
+    # Report progress only in verbose mode; otherwise iterate without logging.
     run_iterator = tracked_range(n_runs, "preliminary GMM") if verbose else range(n_runs)
 
     for run in run_iterator:

@@ -1,0 +1,69 @@
+\subsection{Code Structure}
+
+This repository contains the research code, experiment scripts, notebooks, and data accompanying the master's thesis. It is organized as a collection of source directories and standalone research materials rather than as a separately maintained Python library. Commands and notebooks are intended to be run from the repository root.
+
+\subsubsection{Repository Root}
+
+\begin{itemize}
+    \item \texttt{Reconstruction\_of\_graph\_signals\_based\_on\_the\_power\_spectral\_density\_estimation.pdf} -- the thesis document accompanying the code.
+    \item \texttt{README.md} -- project overview, environment setup, and instructions for running the experiments.
+    \item \texttt{requirements.txt} -- third-party dependencies used by the source code and notebooks.
+    \item \texttt{pyproject.toml} -- minimal setuptools project metadata and source-package discovery configuration; it does not define a published library interface.
+    \item \texttt{visualize\_real\_signal.py} -- interactive comparison of reconstruction results for the real-data workflows.
+    \item \texttt{tests/} -- focused unit tests for shared experiment helpers.
+\end{itemize}
+
+\subsubsection{Core Methods (\texttt{src/methods})}
+
+The core methods are shared by the synthetic and real-data experiments:
+\begin{itemize}
+    \item \texttt{generation.py} -- defines \texttt{GSPGraph}, graph topology factories, and synthetic graph-signal generation.
+    \item \texttt{reconstruction.py} -- estimates graph power spectral densities (PSDs) from partial observations and implements smoothness- and PSD-based reconstruction.
+    \item \texttt{clustering.py} -- implements diagonal-covariance Gaussian mixture clustering in the graph Fourier domain and clustering evaluation utilities.
+    \item \texttt{models.py} -- combines clustering and reconstruction workflows, including iterative and simultaneous methods and continuous PSD transfer between graphs.
+\end{itemize}
+
+\subsubsection{Synthetic Experiments (\texttt{src/experiments})}
+
+The synthetic experiment suite and its shared helpers are located in \texttt{src/experiments}:
+\begin{itemize}
+    \item \texttt{\_helper.py} -- shared experiment configuration, PSD profiles, signal-split and observation-mask preparation, evaluation metrics, and result aggregation.
+    \item \texttt{experiment\_graph\_size\_visibility.py} -- studies graph size, observation visibility, and the number of nearest neighbors.
+    \item \texttt{experiment\_model\_improvements.py} -- compares baseline, iterative, and simultaneous reconstruction workflows.
+    \item \texttt{experiment\_topologies.py} -- compares reconstruction across k-NN, grid, Erd\H{o}s--R\'enyi, Barab\'asi--Albert, and Watts--Strogatz graphs.
+    \item \texttt{experiment\_vertex\_visibility\_spline\_transfer.py} -- evaluates PSD-spline transfer between graphs with different vertex visibility, for single and mixed signals.
+    \item \texttt{multiple\_psd\_exp.py} -- evaluates mixtures with randomly generated PSD profiles and varying numbers of components.
+    \item \texttt{run\_all\_experiments.py} -- runs the maintained synthetic experiment scripts sequentially.
+\end{itemize}
+
+The exploratory workflows in \texttt{src/additional/preliminary\_tests.py} are used by the preliminary-experiments notebook and are separate from the maintained synthetic experiment suite.
+
+\subsubsection{Real-Data Experiments (\texttt{src/real\_data\_experiments})}
+
+This directory contains dataset-specific preparation and evaluation code:
+\begin{itemize}
+    \item \texttt{\_helpers.py} -- shared row-wise scaling for partially observed real-data signals.
+    \item \texttt{air\_quality.py} -- loads Warsaw PM2.5 measurements, constructs a geographic station graph, and evaluates reconstruction.
+    \item \texttt{metr\_la.py} -- loads METR-LA traffic data and its sensor adjacency matrix, then evaluates reconstruction on the sensor graph.
+    \item \texttt{movie\_ratings.py} -- prepares movie-rating signals and a movie-similarity graph from a ratings CSV, and reads or writes the prepared data.
+    \item \texttt{movie\_ratings\_experiment.py} -- evaluates reconstruction from prepared movie-rating data.
+    \item \texttt{run\_all.py} -- sequentially invokes the real-data preparation and experiment entry points.
+\end{itemize}
+
+The Warsaw air-quality CSV files are included under \texttt{data/air\_quality/}. METR-LA and MovieLens source datasets are external inputs and are not included in the repository. The optional download examples are in \texttt{real\_data\_downloading.ipynb}; the real-data scripts expect the directory and file layouts documented in the README and their command-line help.
+
+\subsubsection{Notebooks}
+
+The root-level Jupyter notebooks provide interactive exploration and plotting:
+\begin{itemize}
+    \item \texttt{preliminary\_experiments.ipynb} -- introductory PSD estimation, reconstruction, mixed-signal experiments, and reference-profile visualization.
+    \item \texttt{clustering\_test.ipynb} -- clustering comparisons for mixtures with different PSD profiles and observation rates.
+    \item \texttt{plot\_generation.ipynb} -- plots aggregated reconstruction and clustering results from the generated \texttt{results/} directory.
+    \item \texttt{real\_data\_downloading.ipynb} -- optional KaggleHub download examples for external datasets.
+\end{itemize}
+
+Some notebooks contain saved outputs from earlier runs. Reproducing those results may require running the experiment scripts and obtaining the external datasets first.
+
+\subsubsection{Generated Results}
+
+Experiment runs write their outputs to \texttt{results/}. The synthetic suite stores aggregated reconstruction metrics under \texttt{results/reconstruction/}, clustering metrics under \texttt{results/clustering/}, and experiment configurations under \texttt{results/configs/}. Real-data experiments write run metrics, summaries, and configuration files to their configured output directories. These generated results are not source inputs and are not included in the repository by default.

@@ -28,6 +28,7 @@ from src.experiments._helper import (
     evaluate_reconstruction_methods,
     missing_mae,
 )
+from src.real_data_experiments._helpers import fit_row_scaling as _fit_scaling
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -166,37 +167,6 @@ def mask_entries_exactly(
     return observed
 
 
-def _fit_scaling(train_observed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Estimate per-sensor location and scale using observed training values."""
-    observed = np.isfinite(train_observed)
-    counts = observed.sum(axis=1, keepdims=True)
-    global_values = train_observed[observed]
-    if global_values.size == 0:
-        raise ValueError("Training data contain no observed values.")
-    global_center = float(np.mean(global_values))
-    global_scale = float(np.std(global_values))
-    sums = np.nansum(train_observed, axis=1, keepdims=True)
-    center = np.divide(
-        sums,
-        counts,
-        out=np.full_like(sums, global_center, dtype=float),
-        where=counts > 0,
-    )
-    squared = np.where(observed, (train_observed - center) ** 2, 0.0).sum(
-        axis=1, keepdims=True
-    )
-    scale = np.sqrt(
-        np.divide(
-            squared,
-            counts,
-            out=np.full_like(squared, global_scale**2, dtype=float),
-            where=counts > 0,
-        )
-    )
-    scale[~np.isfinite(scale) | (scale < 1e-8)] = 1.0
-    return center, scale
-
-
 def run_experiment(config: MetrLAConfig) -> tuple[pd.DataFrame, dict]:
     """Run repeated masks over one chronological train/test split."""
     if not 0.0 < config.train_fraction < 1.0:
@@ -330,6 +300,7 @@ def run_experiment(config: MetrLAConfig) -> tuple[pd.DataFrame, dict]:
 def save_results(
     results: pd.DataFrame, metadata: dict, output_dir: str | Path
 ) -> tuple[Path, Path, Path]:
+    """Write per-run metrics, summary statistics, and experiment configuration."""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     raw_path = directory / "metr_la_runs.csv"
@@ -347,7 +318,7 @@ def save_results(
         .reset_index()
     )
     
-    # Wyświetlamy mean_K tylko dla 'proposed'
+    # The component count is meaningful only for the proposed method.
     summary.loc[summary["method"] != "proposed", "mean_K"] = np.nan
 
     summary.to_csv(summary_path, index=False, float_format="%.6f")
@@ -359,6 +330,7 @@ def save_results(
 
 
 def parse_args() -> MetrLAConfig:
+    """Parse command-line options while preserving dataclass defaults."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=str)
     parser.add_argument("--output-dir", type=str)
@@ -373,27 +345,28 @@ def parse_args() -> MetrLAConfig:
     parser.add_argument("--psd-beta", type=float)
     parser.add_argument("--smooth-beta", type=float)
     
-    # Ustawiamy default na None zamiast na standardowe False z store_true
+    # Use None so an omitted flag does not override the config default.
     parser.add_argument("--no-standardize", action="store_true", default=None)
     
     args = parser.parse_args()
     
-    # Filtrujemy tylko podane argumenty
+    # Keep only values explicitly supplied on the command line.
     provided_args = {k: v for k, v in vars(args).items() if v is not None}
     
-    # Poprawka dla tupli w missing_rates
+    # argparse returns a list for nargs="+"; the config stores rates as a tuple.
     if "missing_rates" in provided_args:
         provided_args["missing_rates"] = tuple(provided_args["missing_rates"])
         
-    # Odwrócenie logiki dla flagi "no-standardize" i zmiana nazwy pod Dataclass
+    # Map the negative CLI flag to the positive config field.
     if "no_standardize" in provided_args:
-        # Jeśli użytkownik podał flagę, no_standardize to True. Wtedy standardize = False.
+        # If --no-standardize is present, disable standardization.
         provided_args["standardize"] = not provided_args.pop("no_standardize")
 
     return MetrLAConfig(**provided_args)
 
 
 def main() -> None:
+    """Run the experiment with command-line options and print its summary."""
     config = parse_args()
     results, metadata = run_experiment(config)
     paths = save_results(results, metadata, config.output_dir)

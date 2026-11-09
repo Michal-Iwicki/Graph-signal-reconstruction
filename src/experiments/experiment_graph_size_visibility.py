@@ -223,7 +223,7 @@ def experiment_neighbors():
 
     for k in NEIGHBOR_VALUES:
         for run in tracked_range(N_RUNS, f"k neighbors: k={k}"):
-            # Używamy innego przesunięcia w ziarnie (np. 2000), żeby uniknąć kolizji
+            # Use a distinct seed offset for each neighborhood size.
             graph_seed = SEED + 2000 * k + run
             data_seed = SEED + run
             np.random.seed(graph_seed)

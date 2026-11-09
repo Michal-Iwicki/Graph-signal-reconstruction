@@ -18,8 +18,9 @@ import pandas as pd
 from src.experiments._helper import evaluate_reconstruction_methods
 from src.methods.generation import GSPGraph
 from src.methods.models import MixedSignalReconstruction
+from src.real_data_experiments._helpers import fit_row_scaling as _fit_scaling
 
-# Uniwersalne budowanie ścieżek z wykorzystaniem os.path
+# Resolve default input and output paths relative to the repository root.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_HISTORY_PATH = os.path.join(PROJECT_ROOT, "data", "air_quality", "pm25_Warsaw_air_quality.csv")
 DEFAULT_STATIONS_PATH = os.path.join(PROJECT_ROOT, "data", "air_quality", "Warszawa_stations_data.csv")
@@ -28,6 +29,8 @@ DEFAULT_RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "air_quality")
 
 @dataclass(frozen=True)
 class AirQualityConfig:
+    """Input paths and parameters for the Warsaw air-quality experiment."""
+
     history_path: str = DEFAULT_HISTORY_PATH
     stations_path: str = DEFAULT_STATIONS_PATH
     output_dir: str = DEFAULT_RESULTS_DIR
@@ -48,6 +51,8 @@ class AirQualityConfig:
 
 @dataclass(frozen=True)
 class AirQualityData:
+    """Graph, station-by-time signals, timestamps, and aligned station metadata."""
+
     graph: GSPGraph
     signals: np.ndarray
     timestamps: pd.DatetimeIndex
@@ -74,8 +79,7 @@ def build_geographic_graph(
     kernel_bandwidth_km: float | None = None,
     k_neighbors: int = -1
 ) -> GSPGraph:
-    """Build a complete or k-NN graph with Gaussian geographic-distance weights."""
-    # Ograniczenie wymagań do absolutnego minimum niezbędnego do stworzenia grafu
+    """Build a complete or k-NN graph weighted by geographic distance."""
     required = {"station_id", "latitude", "longitude"}
     if missing := required - set(stations.columns):
         raise ValueError(f"Station dictionary is missing columns: {sorted(missing)}")
@@ -98,7 +102,7 @@ def build_geographic_graph(
 
     graph = nx.Graph(bandwidth_km=bandwidth)
     
-    # Dodawanie węzłów bez zbędnych atrybutów
+    # Keep station identifiers as graph nodes and retain their coordinates.
     for row in stations.itertuples(index=False):
         graph.add_node(
             row.station_id,
@@ -110,14 +114,14 @@ def build_geographic_graph(
     station_ids = stations["station_id"].tolist()
     
     if k_neighbors == -1 or k_neighbors >= count - 1:
-        # Graf pełny
+        # Connect every station pair.
         for source in range(count):
             for target in range(source + 1, count):
                 distance = float(distances[source, target])
                 weight = float(np.exp(-(distance**2) / (2.0 * bandwidth**2)))
                 graph.add_edge(station_ids[source], station_ids[target], weight=weight, distance_km=distance)
     else:
-        # Graf k-NN
+        # Connect each station to its nearest neighbors; the graph is undirected.
         sorted_indices = np.argsort(distances, axis=1)
         knn_indices = sorted_indices[:, 1:k_neighbors + 1]
         
@@ -133,6 +137,7 @@ def build_geographic_graph(
 def _remove_consecutive_duplicates(
     values: np.ndarray, timestamps: pd.DatetimeIndex
 ) -> tuple[np.ndarray, pd.DatetimeIndex]:
+    """Remove repeated adjacent measurements while keeping timestamps aligned."""
     keep = np.ones(values.shape[0], dtype=bool)
     if values.shape[0] > 1:
         equal = (values[1:] == values[:-1]) | (np.isnan(values[1:]) & np.isnan(values[:-1]))
@@ -141,6 +146,7 @@ def _remove_consecutive_duplicates(
 
 
 def load_air_quality(config: AirQualityConfig) -> AirQualityData:
+    """Load Warsaw PM2.5 measurements and construct their geographic graph."""
     history = pd.read_csv(config.history_path)
     stations = pd.read_csv(config.stations_path, encoding="utf-8-sig")
 
@@ -155,7 +161,7 @@ def load_air_quality(config: AirQualityConfig) -> AirQualityData:
     values, timestamps = values[order], timestamps[order]
     values, timestamps = _remove_consecutive_duplicates(values, timestamps)
     
-    # Brakujące dane
+    # Treat non-finite and non-positive measurements as missing.
     values[~np.isfinite(values) | (values <= 0.0)] = np.nan
     graph = build_geographic_graph(selected, config.kernel_bandwidth_km, config.k_neighbors)
     
@@ -168,6 +174,7 @@ def load_air_quality(config: AirQualityConfig) -> AirQualityData:
 
 
 def mask_known_values(signals: np.ndarray, p_observed: float, random_scores: np.ndarray) -> np.ndarray:
+    """Retain a reproducible fraction of each signal's finite measurements."""
     values = np.asarray(signals, dtype=float)
     masked = np.full(values.shape, np.nan, dtype=float)
     for column in range(values.shape[1]):
@@ -178,25 +185,14 @@ def mask_known_values(signals: np.ndarray, p_observed: float, random_scores: np.
     return masked
 
 
-def _fit_scaling(train_observed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    observed = np.isfinite(train_observed)
-    global_values = train_observed[observed]
-    global_center, global_scale = float(np.mean(global_values)), float(np.std(global_values))
-    counts = observed.sum(axis=1, keepdims=True)
-    sums = np.nansum(train_observed, axis=1, keepdims=True)
-    center = np.divide(sums, counts, out=np.full_like(sums, global_center), where=counts > 0)
-    squared = np.where(observed, (train_observed - center) ** 2, 0.0).sum(axis=1, keepdims=True)
-    scale = np.sqrt(np.divide(squared, counts, out=np.full_like(squared, global_scale**2), where=counts > 0))
-    scale[~np.isfinite(scale) | (scale < 1e-8)] = 1.0
-    return center, scale
-
-
 def _hidden_errors(truth: np.ndarray, estimate: np.ndarray, observed: np.ndarray) -> np.ndarray:
+    """Return errors for known test values hidden by the artificial mask."""
     hidden = np.isfinite(truth) & ~np.isfinite(observed)
     return truth[hidden] - estimate[hidden]
 
 
 def run_experiment(config: AirQualityConfig) -> tuple[pd.DataFrame, dict, AirQualityData]:
+    """Run repeated masks over a chronological train/test split."""
     data = load_air_quality(config)
     split_at = int(config.train_fraction * data.signals.shape[1])
     train, test = data.signals[:, :split_at], data.signals[:, split_at:]
@@ -248,17 +244,18 @@ def run_experiment(config: AirQualityConfig) -> tuple[pd.DataFrame, dict, AirQua
     return pd.DataFrame(rows), metadata, data
 
 def save_results(results: pd.DataFrame, metadata: dict, data: AirQualityData, output_dir: str) -> None:
+    """Write per-run metrics, summary statistics, and experiment configuration."""
     os.makedirs(output_dir, exist_ok=True)
     results.to_csv(os.path.join(output_dir, "runs.csv"), index=False, float_format="%.6f")
     
-    # Dodajemy mean_K w agregacji
+    # Include the selected component count in the summary.
     summary = results.groupby(["missing_rate", "method"]).agg(
         mae=("mae", "mean"), 
         std_mae=("mae", "std"),
         mean_K=("selected_n_components", "mean")
     ).reset_index()
     
-    # Wyświetlamy mean_K tylko dla 'proposed'
+    # The component count is meaningful only for the proposed method.
     summary.loc[summary["method"] != "proposed", "mean_K"] = np.nan
     
     summary.to_csv(os.path.join(output_dir, "summary.csv"), index=False, float_format="%.6f")
@@ -268,6 +265,7 @@ def save_results(results: pd.DataFrame, metadata: dict, data: AirQualityData, ou
 
 
 def parse_args() -> AirQualityConfig:
+    """Parse command-line options, leaving unspecified values at their defaults."""
     parser = argparse.ArgumentParser()
     
     parser.add_argument("--history-path", type=str)
@@ -282,19 +280,19 @@ def parse_args() -> AirQualityConfig:
     
     args = parser.parse_args()
     
-    # Przekształcamy argumenty na słownik i ZATRZYMUJEMY tylko te, które nie są None (czyli zostały podane w konsoli)
+    # Keep only values explicitly supplied on the command line.
     provided_args = {k: v for k, v in vars(args).items() if v is not None}
     
-    # Dataclass oczekuje krotki (tuple), a argparse dla nargs="+" zwraca listę, więc poprawiamy typ, jeśli użytkownik to podał
+    # argparse returns a list for nargs="+"; the config stores rates as a tuple.
     if "missing_rates" in provided_args:
         provided_args["missing_rates"] = tuple(provided_args["missing_rates"])
     
-    # Rozpakowujemy słownik prosto do konstruktora (**provided_args).
-    # Wszystkie pominięte parametry wezmą swoje wartości z ustawień w @dataclass!
+    # Unspecified values use the dataclass defaults.
     return AirQualityConfig(**provided_args)
 
 
 def main() -> None:
+    """Run the experiment with command-line options and print its summary."""
     config = parse_args()
     results, metadata, data = run_experiment(config)
     save_results(results, metadata, data, config.output_dir)

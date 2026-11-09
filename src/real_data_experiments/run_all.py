@@ -1,3 +1,5 @@
+"""Run the real-data preparation and reconstruction experiments in sequence."""
+
 from src.real_data_experiments import air_quality, metr_la,movie_ratings,movie_ratings_experiment
 
 if __name__ == "__main__":

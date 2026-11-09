@@ -292,7 +292,7 @@ def build_movie_rating_data(
     if frame.empty:
         raise ValueError("No ratings remain after minimum-count filtering.")
         
-    # Wiersze to filmy, kolumny to uzytkownicy
+    # Rows represent movies and columns represent users.
     matrix = frame.pivot_table(
         index=movie_col, columns=user_col, values=rating_col, aggfunc="mean", sort=True
     )
@@ -408,6 +408,7 @@ def prepare_movie_rating_data(
 
 
 def main() -> None:
+    """Prepare movie-rating graph data from a ratings CSV."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ratings-path", default=str(DEFAULT_RATINGS_PATH))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))

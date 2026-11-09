@@ -26,7 +26,7 @@ EXPERIMENT_CONFIG = experiment_config()
 N_NODES = EXPERIMENT_CONFIG.n_nodes
 KNN_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
 
-# Generujemy referencyjny graf k-NN, aby naturalnie wyznaczyć liczbę krawędzi
+# Use a reference k-NN graph to set a natural target edge count.
 np.random.seed(EXPERIMENT_CONFIG.seed)
 _reference_knn = GraphFactory.generate_nn_graph(
     N=N_NODES,
@@ -37,10 +37,10 @@ TARGET_EDGES = _reference_knn.number_of_edges()
 # Wyznaczamy parametry dla reszty topologii na podstawie wygenerowanego TARGET_EDGES
 ERDOS_RENYI_PROBABILITY = 2 * TARGET_EDGES / (N_NODES * (N_NODES - 1))
 
-# Zabezpieczenie przed ujemnymi wartościami przy pierwiastkowaniu
+# Guard against a negative radicand due to rounding or edge-count limits.
 _discriminant = max(0, N_NODES**2 - 4 * TARGET_EDGES)
 BARABASI_ALBERT_M = round((N_NODES - np.sqrt(_discriminant)) / 2)
-BARABASI_ALBERT_M = max(1, BARABASI_ALBERT_M)  # m nie może być mniejsze niż 1
+BARABASI_ALBERT_M = max(1, BARABASI_ALBERT_M)  # The attachment count must be at least one.
 
 WATTS_STROGATZ_K = 2 * round(TARGET_EDGES / N_NODES)
 WATTS_STROGATZ_REWIRING = 0.1
@@ -196,7 +196,6 @@ def experiment_topology():
                     "mean_degree": float(np.mean(degree_values)),
                     "degree_std": float(np.std(degree_values)),
                     "clustering_coefficient": nx.average_clustering(graph),
-                    # USUNIĘTO average_shortest_path
                     "p_observed": P_OBSERVED,
                     "n_train": N_TRAIN,
                     "n_test": N_TEST,

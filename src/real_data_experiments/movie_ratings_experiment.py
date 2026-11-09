@@ -26,6 +26,9 @@ from src.methods.models import MixedSignalReconstruction
 from src.real_data_experiments.movie_ratings import (
     load_prepared_movie_rating_data,
 )
+from src.real_data_experiments._helpers import (
+    fit_row_scaling as _fit_movie_scaling,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -74,37 +77,10 @@ def mask_known_ratings(
     return masked
 
 
-def _fit_movie_scaling(train_observed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Estimate movie means/scales from visible training ratings only."""
-    observed = np.isfinite(train_observed)
-    global_values = train_observed[observed]
-    if global_values.size == 0:
-        raise ValueError("Training data contain no visible ratings.")
-    global_center = float(np.mean(global_values))
-    global_scale = float(np.std(global_values))
-    counts = observed.sum(axis=1, keepdims=True)
-    sums = np.nansum(train_observed, axis=1, keepdims=True)
-    center = np.divide(
-        sums, counts, out=np.full_like(sums, global_center, dtype=float), where=counts > 0
-    )
-    squared = np.where(observed, (train_observed - center) ** 2, 0.0).sum(
-        axis=1, keepdims=True
-    )
-    scale = np.sqrt(
-        np.divide(
-            squared,
-            counts,
-            out=np.full_like(squared, global_scale**2, dtype=float),
-            where=counts > 0,
-        )
-    )
-    scale[~np.isfinite(scale) | (scale < 1e-8)] = 1.0
-    return center, scale
-
-
 def _hidden_errors(
     truth: np.ndarray, estimate: np.ndarray, observed: np.ndarray
 ) -> np.ndarray:
+    """Return errors for known test ratings hidden by the artificial mask."""
     artificially_hidden = np.isfinite(truth) & ~np.isfinite(observed)
     if not np.any(artificially_hidden):
         raise ValueError("No known test ratings were hidden.")
@@ -143,7 +119,7 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
 
     for run in range(config.n_runs):
         for rate_idx, missing_rate in enumerate(missing_rates):
-            # Niezależne ziarno dla każdej pary (run, missing_rate)
+            # Use an independent deterministic seed for each run/rate pair.
             sub_seed = config.seed + run * len(missing_rates) + rate_idx
             sub_rng = np.random.default_rng(sub_seed)
 
@@ -231,6 +207,7 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
 def save_results(
     results: pd.DataFrame, metadata: dict, output_dir: str | Path
 ) -> tuple[Path, Path, Path]:
+    """Write per-run metrics, summary statistics, and experiment configuration."""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     raw_path = directory / "movie_ratings_runs.csv"
@@ -258,6 +235,7 @@ def save_results(
 
 
 def parse_args() -> MovieRatingsConfig:
+    """Parse command-line options using the experiment config defaults."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default=str(DEFAULT_PREPARED_DATA_DIR))
     parser.add_argument("--output-dir", default=str(DEFAULT_RESULTS_DIR))
@@ -265,7 +243,7 @@ def parse_args() -> MovieRatingsConfig:
     parser.add_argument("--missing-rates", type=float, nargs="+", default=[0.2, 0.5, 0.8])
     parser.add_argument("--min-components", type=int, default=2)
     parser.add_argument("--max-components", type=int, default=10)
-    # Zgodność z MovieRatingsConfig (default=50 zamiast 3):
+    # Keep the command-line default aligned with MovieRatingsConfig.
     parser.add_argument("--n-runs", type=int, default=MovieRatingsConfig.n_runs)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=10.0)
@@ -290,6 +268,7 @@ def parse_args() -> MovieRatingsConfig:
 
 
 def main() -> None:
+    """Run the experiment with command-line options and print its summary."""
     config = parse_args()
     results, metadata = run_experiment(config)
     paths = save_results(results, metadata, config.output_dir)
