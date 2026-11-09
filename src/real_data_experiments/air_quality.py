@@ -247,14 +247,20 @@ def run_experiment(config: AirQualityConfig) -> tuple[pd.DataFrame, dict, AirQua
     metadata = asdict(config)
     return pd.DataFrame(rows), metadata, data
 
-
 def save_results(results: pd.DataFrame, metadata: dict, data: AirQualityData, output_dir: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
     results.to_csv(os.path.join(output_dir, "runs.csv"), index=False, float_format="%.6f")
     
+    # Dodajemy mean_K w agregacji
     summary = results.groupby(["missing_rate", "method"]).agg(
-        mae=("mae", "mean"), std_mae=("mae", "std")
+        mae=("mae", "mean"), 
+        std_mae=("mae", "std"),
+        mean_K=("selected_n_components", "mean")
     ).reset_index()
+    
+    # Wyświetlamy mean_K tylko dla 'proposed'
+    summary.loc[summary["method"] != "proposed", "mean_K"] = np.nan
+    
     summary.to_csv(os.path.join(output_dir, "summary.csv"), index=False, float_format="%.6f")
     
     with open(os.path.join(output_dir, "config.json"), "w", encoding="utf-8") as f:

@@ -330,21 +330,26 @@ def run_experiment(config: MetrLAConfig) -> tuple[pd.DataFrame, dict]:
 def save_results(
     results: pd.DataFrame, metadata: dict, output_dir: str | Path
 ) -> tuple[Path, Path, Path]:
-    """Save per-run values, aggregates, and a reproducibility config."""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     raw_path = directory / "metr_la_runs.csv"
     summary_path = directory / "metr_la_summary.csv"
     config_path = directory / "metr_la_config.json"
     results.to_csv(raw_path, index=False, float_format="%.6f")
+    
     summary = (
         results.groupby(["missing_rate", "method"])
         .agg(
             mae=("mae", "mean"),
-            std_mae=("mae", "std")
+            std_mae=("mae", "std"),
+            mean_K=("selected_n_components", "mean")
         )
         .reset_index()
     )
+    
+    # Wyświetlamy mean_K tylko dla 'proposed'
+    summary.loc[summary["method"] != "proposed", "mean_K"] = np.nan
+
     summary.to_csv(summary_path, index=False, float_format="%.6f")
     config_path.write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",

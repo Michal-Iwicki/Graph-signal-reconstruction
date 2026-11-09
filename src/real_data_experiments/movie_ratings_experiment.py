@@ -117,6 +117,9 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
         raise ValueError("train_fraction must lie in (0, 1).")
     if config.min_components < 1 or config.max_components < config.min_components:
         raise ValueError("Require 1 <= min_components <= max_components.")
+    if config.n_runs < 1:
+        raise ValueError("n_runs must be at least 1.")
+
     missing_rates = tuple(float(rate) for rate in config.missing_rates)
     if not missing_rates or any(
         not np.isfinite(rate) or not 0.0 < rate < 1.0
@@ -137,19 +140,26 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
     graph = matrix_data.graph
     component_candidates = list(range(config.min_components, config.max_components + 1))
     rows: list[dict] = []
+
     for run in range(config.n_runs):
-        run_rng = np.random.default_rng(config.seed + run)
-        train_scores = run_rng.random(train.shape)
-        test_scores = run_rng.random(test.shape)
-        for missing_rate in missing_rates:
+        for rate_idx, missing_rate in enumerate(missing_rates):
+            # Niezależne ziarno dla każdej pary (run, missing_rate)
+            sub_seed = config.seed + run * len(missing_rates) + rate_idx
+            sub_rng = np.random.default_rng(sub_seed)
+
             p_observed = 1.0 - missing_rate
+            train_scores = sub_rng.random(train.shape)
+            test_scores = sub_rng.random(test.shape)
+
             train_observed = mask_known_ratings(train, p_observed, train_scores)
             test_observed = mask_known_ratings(test, p_observed, test_scores)
+
             if config.standardize:
                 center, scale = _fit_movie_scaling(train_observed)
             else:
                 center = np.zeros((train.shape[0], 1))
                 scale = np.ones((train.shape[0], 1))
+
             train_scaled = (train_observed - center) / scale
             test_scaled = (test_observed - center) / scale
 
@@ -161,7 +171,7 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
                 alpha=config.alpha,
                 beta=config.psd_beta,
                 init_beta=config.smooth_beta,
-                random_state=config.seed + run,
+                random_state=sub_seed,
             )
             selected_components = selector.best_K_
             estimates, _, model = evaluate_reconstruction_methods(
@@ -172,7 +182,7 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
                 alpha=config.alpha,
                 beta=config.psd_beta,
                 smooth_beta=config.smooth_beta,
-                random_state=config.seed + run,
+                random_state=sub_seed,
             )
             for method, scaled_estimate in estimates.items():
                 estimate = scaled_estimate * scale + center
@@ -184,9 +194,9 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
                         "method": method,
                         "mae": float(np.mean(np.abs(errors))),
                         "n_hidden_test_ratings": int(errors.size),
-                        "n_train": train.shape[1],  # liczba użytkowników treningowych
-                        "n_test": test.shape[1],    # liczba użytkowników testowych
-                        "n_nodes": train.shape[0],  # liczba filmów
+                        "n_train": train.shape[1],
+                        "n_test": test.shape[1],
+                        "n_nodes": train.shape[0],
                         "p_observed": p_observed,
                         "selected_n_components": selected_components,
                         "selection_score": selector.best_score_ if method == "proposed" else np.nan,
@@ -221,21 +231,25 @@ def run_experiment(config: MovieRatingsConfig) -> tuple[pd.DataFrame, dict]:
 def save_results(
     results: pd.DataFrame, metadata: dict, output_dir: str | Path
 ) -> tuple[Path, Path, Path]:
-    """Save per-run results, aggregate metrics, and configuration."""
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     raw_path = directory / "movie_ratings_runs.csv"
     summary_path = directory / "movie_ratings_summary.csv"
     config_path = directory / "movie_ratings_config.json"
     results.to_csv(raw_path, index=False, float_format="%.6f")
+
     summary = (
         results.groupby(["missing_rate", "method"])
         .agg(
             mae=("mae", "mean"),
-            std_mae=("mae", "std"),
+            std_mae=("mae", lambda x: float(np.std(x, ddof=1)) if len(x) > 1 else 0.0),
+            mean_K=("selected_n_components", "mean"),
         )
         .reset_index()
     )
+
+    summary.loc[summary["method"] != "proposed", "mean_K"] = np.nan
+
     summary.to_csv(summary_path, index=False, float_format="%.6f")
     config_path.write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -251,7 +265,8 @@ def parse_args() -> MovieRatingsConfig:
     parser.add_argument("--missing-rates", type=float, nargs="+", default=[0.2, 0.5, 0.8])
     parser.add_argument("--min-components", type=int, default=2)
     parser.add_argument("--max-components", type=int, default=10)
-    parser.add_argument("--n-runs", type=int, default=3)
+    # Zgodność z MovieRatingsConfig (default=50 zamiast 3):
+    parser.add_argument("--n-runs", type=int, default=MovieRatingsConfig.n_runs)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=10.0)
     parser.add_argument("--psd-beta", type=float, default=0.75)

@@ -50,7 +50,7 @@ N_TRAIN = EXPERIMENT_CONFIG.n_train
 N_TEST = EXPERIMENT_CONFIG.n_test
 
 # Fraction of full-graph vertices available during training.
-TRAIN_VERTEX_VISIBILITY = (0.2, 0.4, 0.6, 0.8, 1.0)
+TRAIN_VERTEX_VISIBILITY = (0.2, 0.4, 0.6, 0.8, 0.9)
 
 # Testing uses the full graph, but some signal values remain hidden and must be
 # reconstructed.
