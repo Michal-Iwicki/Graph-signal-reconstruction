@@ -88,7 +88,7 @@ class GraphFactory:
         adjacency = skn.kneighbors_graph(
             coordinates,
             k,
-            mode="connectivity",
+            mode="distance",
             include_self=False,
         )
         adjacency = adjacency.maximum(adjacency.T)

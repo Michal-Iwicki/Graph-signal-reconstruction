@@ -1,4 +1,4 @@
-"""Vary graph size and observation probability for a fixed five-PSD mixture."""
+"""Vary graph size, observation probability, and number of neighbors for a fixed five-PSD mixture."""
 
 import numpy as np
 import pandas as pd
@@ -36,12 +36,15 @@ N_RUNS = EXPERIMENT_CONFIG.n_runs
 SEED = EXPERIMENT_CONFIG.seed
 
 # Experiment 1 varies only the number of vertices.
-NODE_VALUES = [50, 100, 200, 400]
-FIXED_VISIBILITY = 0.5
+NODE_VALUES = [50, 100, 250, 500, 1000]
+FIXED_VISIBILITY = EXPERIMENT_CONFIG.p_observed
 
 # Experiment 2 varies only the observation probability.
-FIXED_NODES = 100
+FIXED_NODES = EXPERIMENT_CONFIG.n_nodes
 VISIBILITY_VALUES = [0.1, 0.2, 0.5, 0.8]
+
+# Experiment 3 varies only the number of neighbors in k-NN.
+NEIGHBOR_VALUES = [5, 10, 25, 50, 100]
 
 
 # ============================================================
@@ -139,6 +142,7 @@ def experiment_number_of_nodes():
                 rows.append({
                     "experiment": "number_of_nodes",
                     "n_nodes": n_nodes,
+                    "k_neighbors": K_NEIGHBORS,
                     "p_observed": FIXED_VISIBILITY,
                     "n_train": N_TRAIN,
                     "n_test": N_TEST,
@@ -196,6 +200,7 @@ def experiment_visibility():
                 rows.append({
                     "experiment": "visibility",
                     "n_nodes": FIXED_NODES,
+                    "k_neighbors": K_NEIGHBORS,
                     "p_observed": p_observed,
                     "n_train": N_TRAIN,
                     "n_test": N_TEST,
@@ -209,11 +214,54 @@ def experiment_visibility():
 
 
 # ============================================================
-# 5. ENTRYPOINT
+# 5. K-NEIGHBORS EXPERIMENT
+# ============================================================
+
+def experiment_neighbors():
+    """Evaluate reconstruction while varying the number of neighbors in k-NN."""
+    rows = []
+
+    for k in NEIGHBOR_VALUES:
+        for run in tracked_range(N_RUNS, f"k neighbors: k={k}"):
+            # Use a distinct seed offset for each neighborhood size.
+            graph_seed = SEED + 2000 * k + run
+            data_seed = SEED + run
+            np.random.seed(graph_seed)
+
+            graph = GraphFactory.generate_nn_graph(
+                N=FIXED_NODES,
+                k=k,
+            )
+
+            method_results = compare_methods(
+                graph=graph,
+                p_observed=FIXED_VISIBILITY,
+                seed=data_seed,
+            )
+
+            for result in method_results:
+                rows.append({
+                    "experiment": "k_neighbors",
+                    "n_nodes": FIXED_NODES,
+                    "k_neighbors": k,
+                    "p_observed": FIXED_VISIBILITY,
+                    "n_train": N_TRAIN,
+                    "n_test": N_TEST,
+                    "run": run,
+                    "graph_seed": graph_seed,
+                    "data_seed": data_seed,
+                    **result,
+                })
+
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# 6. ENTRYPOINT
 # ============================================================
 
 def save_results(results, suite, varied_columns, **config_overrides):
-    """Save one graph-size/visibility study with its constant metadata."""
+    """Save one graph-size/visibility/neighbors study with its constant metadata."""
     save_aggregated_results(
         results, suite, varied_columns,
         config_dict(
@@ -225,12 +273,15 @@ def save_results(results, suite, varied_columns, **config_overrides):
 
 
 def main():
-    """Run and save both graph-size and observation-visibility studies."""
+    """Run and save graph-size, observation-visibility, and k-neighbors studies."""
     node_results = experiment_number_of_nodes()
     visibility_results = experiment_visibility()
+    neighbors_results = experiment_neighbors()
+    
     save_results(
-        pd.concat([node_results, visibility_results], ignore_index=True),
-        "graph_size_visibility", ["experiment", "n_nodes", "p_observed"],
+        pd.concat([node_results, visibility_results, neighbors_results], ignore_index=True),
+        "graph_size_visibility_neighbors", 
+        ["experiment", "n_nodes", "p_observed", "k_neighbors"],
     )
 
 

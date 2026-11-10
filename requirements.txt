@@ -5,3 +5,5 @@ matplotlib
 scipy
 scikit-learn
 seaborn
+tables
+kagglehub

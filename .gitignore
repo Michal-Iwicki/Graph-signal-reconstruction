@@ -3,3 +3,7 @@ __pycache__/
 *.egg-info/
 *.csv
 *.json
+data
+olds
+*.zip
+*.pdf

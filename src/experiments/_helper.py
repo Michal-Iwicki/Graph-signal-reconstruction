@@ -34,13 +34,13 @@ CONFIG_RESULTS_DIR = RESULTS_DIR / "configs"
 class ExperimentConfig:
     """Parameters shared by the maintained graph experiments."""
 
-    n_nodes: int = 100
+    n_nodes: int = 250
     k_neighbors: int = 10
     n_train: int = 600
     n_test: int = 200
-    p_observed: float = 0.5
+    p_observed: float = 0.25
     n_components: int = 5
-    n_runs: int = 10
+    n_runs: int = 50
     seed: int = 42
     alpha: float = 10.0
     psd_beta: float = 0.75
@@ -251,6 +251,7 @@ def gaussian_psd(
     """Create a Gaussian profile on normalized graph frequencies."""
 
     def profile(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
+        """Evaluate the Gaussian profile at the supplied graph frequencies."""
         x = np.asarray(eigenvalues, dtype=float) / lambda_max
         values = np.exp(-0.5 * (x - mean) ** 2 / variance)
         return normalize_psd(values)
@@ -267,6 +268,7 @@ def edge_skewed_psd(
         raise ValueError("side must be 'low' or 'high'.")
 
     def profile(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
+        """Evaluate the edge-skewed profile at the supplied graph frequencies."""
         x = np.asarray(eigenvalues, dtype=float) / lambda_max
         distance = x if side == "low" else 1.0 - x
         values = np.exp(-0.5 * (distance / scale) ** 2)
@@ -282,6 +284,7 @@ def flat_band_psd(
     """Create a flat PSD supported on one normalized frequency interval."""
 
     def profile(eigenvalues: np.ndarray, lambda_max: float) -> np.ndarray:
+        """Return one inside the frequency band and zero outside it."""
         x = np.asarray(eigenvalues, dtype=float) / lambda_max
         return ((x >= low) & (x <= high)).astype(float)
 

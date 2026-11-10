@@ -25,7 +25,7 @@ from src.experiments._helper import (
 # 1. FIXED PARAMETERS
 # ============================================================
 
-EXPERIMENT_CONFIG = experiment_config(n_runs=20)
+EXPERIMENT_CONFIG = experiment_config()
 N_NODES = EXPERIMENT_CONFIG.n_nodes
 K_NEIGHBORS = EXPERIMENT_CONFIG.k_neighbors
 N_TRAIN = EXPERIMENT_CONFIG.n_train
@@ -48,7 +48,7 @@ TOL = 1e-4
 
 METHODS = {
 
-    "clustered": {
+    "proposed": {
         "method": "clustered_reconstruction",
         "kwargs": {
             "K_list": [N_COMPONENTS],

@@ -656,7 +656,10 @@ def gmm_mixed_signal_experiment(
     generator = SignalGenerator(graph)
     reconstructor = SignalReconstructor(graph)
 
-    for run in tracked_range(n_runs, "preliminary GMM"):
+    # Report progress only in verbose mode; otherwise iterate without logging.
+    run_iterator = tracked_range(n_runs, "preliminary GMM") if verbose else range(n_runs)
+
+    for run in run_iterator:
         run_seed = seed + run
         random_generator = np.random.default_rng(run_seed)
         split = generate_mixture_split(
@@ -764,6 +767,10 @@ def gmm_mixed_signal_experiment(
         )
 
     values = np.asarray(accuracies, dtype=float)
+    
+    if verbose:
+        print(f"\nOverall Accuracy: {np.mean(values):.4f} ± {np.std(values):.4f}")
+
     return {
         "mean_acc": float(np.mean(values)),
         "std_acc": float(np.std(values)),
