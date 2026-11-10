@@ -1,7 +1,7 @@
 # Graph Signal Reconstruction — Master's Thesis Code
 
 This repository contains the research code and experiments accompanying
-[*Reconstruction of Graph Signals Based on the Power Spectral Density Estimation*](./Reconstruction_of_graph_signals_based_on_the_power_spectral_density_estimation.pdf),
+[*Reconstruction of Graph Signals Based on the Power Spectral Density Estimation*],
 a Master's thesis by Michał Iwicki at the Warsaw University of Technology,
 Faculty of Mathematics and Information Science.
 
@@ -11,17 +11,20 @@ explore the experiments, and reproduce results from the thesis.
 
 ## Research overview
 
-The code studies reconstruction of graph signals from partial observations,
-using graph power spectral density (PSD) estimates under the graph
-wide-sense-stationary model. It includes smoothness- and PSD-based
-reconstruction, spectral clustering with diagonal Gaussian mixtures, and
-workflows for mixtures of signals with different latent PSD profiles.
+The main contribution is an extension of single-PSD graph signal
+reconstruction to heterogeneous multi-PSD data. Instead of estimating one
+global power spectral density (PSD) for signals from different latent sources,
+the method clusters the signals, estimates a separate PSD for each cluster,
+and reconstructs signals using their cluster-specific PSD. The framework uses
+graph smoothness for initialization and performs probabilistic clustering in
+the graph Fourier domain under the graph wide-sense stationary model. The code
+also includes single-PSD and smoothness-based reconstruction baselines and
+experiments on synthetic and real-world data.
 
 ## Repository map
 
 | Path | Contents |
 | --- | --- |
-| [`Reconstruction_of_graph_signals_based_on_the_power_spectral_density_estimation.pdf`](./Reconstruction_of_graph_signals_based_on_the_power_spectral_density_estimation.pdf) | Master's thesis |
 | `src/methods/` | Graph and signal generation, clustering, reconstruction, and combined models |
 | `src/experiments/` | Synthetic experiments and shared evaluation helpers |
 | `src/real_data_experiments/` | Experiments for Warsaw air quality, METR-LA, and MovieLens ratings |
@@ -29,8 +32,6 @@ workflows for mixtures of signals with different latent PSD profiles.
 | `src/additional/plotting.py` | Plot helpers used by the experiment notebooks |
 | `data/air_quality/` | Warsaw station metadata and PM2.5 observations included in the repository |
 | `*.ipynb` | Interactive analyses, figures, and optional dataset-download steps |
-| `visualize_real_signal.py` | Interactive comparison of reconstruction parameters on real datasets |
-| `tests/` | Focused unit tests |
 
 ## Environment
 
@@ -98,13 +99,6 @@ expects prepared `signals.csv` and `adjacency.csv` under
 prepare those files from a compatible ratings CSV. Dataset downloads and
 generated results are not part of this repository.
 
-## Tests
-
-Run the available unit tests with the Python standard library:
-
-```bash
-python -m unittest discover -s tests -v
-```
 
 ## Thesis reference
 
