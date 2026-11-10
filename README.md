@@ -26,6 +26,7 @@ workflows for mixtures of signals with different latent PSD profiles.
 | `src/experiments/` | Synthetic experiments and shared evaluation helpers |
 | `src/real_data_experiments/` | Experiments for Warsaw air quality, METR-LA, and MovieLens ratings |
 | `src/additional/preliminary_tests.py` | Earlier and exploratory experiments used by notebooks |
+| `src/additional/plotting.py` | Plot helpers used by the experiment notebooks |
 | `data/air_quality/` | Warsaw station metadata and PM2.5 observations included in the repository |
 | `*.ipynb` | Interactive analyses, figures, and optional dataset-download steps |
 | `visualize_real_signal.py` | Interactive comparison of reconstruction parameters on real datasets |
@@ -54,11 +55,13 @@ root so imports such as `src.methods` resolve correctly.
 The notebooks provide interactive views of the work:
 
 - [`preliminary_experiments.ipynb`](./preliminary_experiments.ipynb) introduces
-  PSD estimation, reconstruction, and mixed-signal experiments.
+  PSD estimation, reconstruction, and mixed-signal experiments, plus reference
+  and aggregated-result plots.
 - [`clustering_test.ipynb`](./clustering_test.ipynb) compares spectral
   clustering for mixtures with different PSD profiles and observation rates.
 - [`plot_generation.ipynb`](./plot_generation.ipynb) loads experiment summaries
-  from `results/` and produces thesis-style reconstruction and clustering plots.
+  from `results/` and produces thesis-style reconstruction and clustering plots
+  using functions in `src/additional/plotting.py`.
 - [`real_data_downloading.ipynb`](./real_data_downloading.ipynb) contains
   optional dataset-download examples; external datasets are not included here.
 
